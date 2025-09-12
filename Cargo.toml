@@ -1,15 +1,15 @@
 [package]
-name = "gimbal"
+name = "turret"
 version = "0.1.0"
 edition = "2021"
 authors = ["luofang@luofang.org"]
-description = "Command-line tool for controlling STorM32 gimbal controllers via RC Commands protocol"
+description = "Command-line tool for controlling STorM32 turret controllers via RC Commands protocol"
 license = "GPL-3.0"
-repository = "https://github.com/luofang34/gimbal"
-homepage = "https://github.com/luofang34/gimbal"
-documentation = "https://docs.rs/gimbal"
+repository = "https://github.com/luofang34/turret"
+homepage = "https://github.com/luofang34/turret"
+documentation = "https://docs.rs/turret"
 readme = "README.md"
-keywords = ["gimbal", "storm32", "rc-commands", "serial", "bgc"]
+keywords = ["turret", "gimbal", "storm32", "rc-commands", "serial", "bgc"]
 categories = ["command-line-utilities", "hardware-support"]
 rust-version = "1.70"
 
@@ -22,5 +22,5 @@ log = "0.4"
 env_logger = "0.10"
 
 [[bin]]
-name = "gimbal"
+name = "turret"
 path = "src/main.rs"

@@ -32,4 +32,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Async/await support for non-blocking operations
 - Comprehensive device discovery with fallback patterns
 
-[0.1.0]: https://github.com/luofang34/gimbal/releases/tag/v0.1.0
+[0.1.0]: https://github.com/luofang34/turret/releases/tag/v0.1.0

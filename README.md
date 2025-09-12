@@ -1,4 +1,4 @@
-# Gimbal
+# Turret
 
 Command-line tool for STorM32 gimbal controllers. Uses the RC Commands protocol.
 
@@ -22,8 +22,8 @@ Download the latest release from [Releases](../../releases) for your platform.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Clone and build
-git clone https://github.com/luofang34/gimbal
-cd gimbal
+git clone https://github.com/luofang34/turret
+cd turret
 cargo build --release
 ```
 
@@ -31,28 +31,28 @@ cargo build --release
 
 ```bash
 # Basic commands (auto-detects device)
-gimbal status
-gimbal set 10.0 0.0 -15.0
-gimbal set -10,0,15          # comma-separated
-gimbal set 1.5:-2.3:0        # colon-separated
-gimbal center
-gimbal version
+turret status
+turret set 10.0 0.0 -15.0
+turret set -10,0,15          # comma-separated
+turret set 1.5:-2.3:0        # colon-separated
+turret center
+turret version
 
 # Manual device specification
-gimbal --device /dev/ttyUSB0 status
+turret --device /dev/ttyUSB0 status
 
 # Verbose output for debugging
-gimbal -v status          # info
-gimbal -vv status         # debug
-gimbal -vvv status        # trace (shows raw protocol)
+turret -v status          # info
+turret -vv status         # debug
+turret -vvv status        # trace (shows raw protocol)
 
 # Individual axis control
-gimbal pitch 1500         # RC values 700-2300, 0 to recenter
-gimbal roll 0             # recenter roll
+turret pitch 1500         # RC values 700-2300, 0 to recenter
+turret roll 0             # recenter roll
 
 # Pan mode and standby
-gimbal pan-mode 3         # PANPANPAN mode
-gimbal standby true
+turret pan-mode 3         # PANPANPAN mode
+turret standby true
 ```
 
 ## Protocol
