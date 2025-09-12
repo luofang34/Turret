@@ -9,35 +9,56 @@ use device_scanner::DeviceScanner;
 use storm32::Storm32Gimbal;
 
 fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
-    // Check if first argument looks like an array format [x,y,z]
-    if args.len() == 1 && args[0].starts_with('[') && args[0].ends_with(']') {
-        let content = &args[0][1..args[0].len()-1]; // Remove [ and ]
-        let parts: Vec<&str> = content.split(',').collect();
+    if args.len() == 1 {
+        let input = &args[0];
         
-        if parts.len() != 3 {
-            return Err(anyhow!("Array format must contain exactly 3 values: [pitch,roll,yaw]"));
+        // Try comma-separated format: x,y,z
+        if input.contains(',') {
+            let parts: Vec<&str> = input.split(',').collect();
+            if parts.len() != 3 {
+                return Err(anyhow!("Comma format must contain exactly 3 values: pitch,roll,yaw (got {})", parts.len()));
+            }
+            
+            let pitch = parts[0].trim().parse::<f32>()
+                .map_err(|_| anyhow!("Invalid pitch value: '{}'", parts[0]))?;
+            let roll = parts[1].trim().parse::<f32>()
+                .map_err(|_| anyhow!("Invalid roll value: '{}'", parts[1]))?;
+            let yaw = parts[2].trim().parse::<f32>()
+                .map_err(|_| anyhow!("Invalid yaw value: '{}'", parts[2]))?;
+            
+            return Ok((pitch, roll, yaw));
         }
         
-        let pitch = parts[0].trim().parse::<f32>()
-            .map_err(|_| anyhow!("Invalid pitch value: {}", parts[0]))?;
-        let roll = parts[1].trim().parse::<f32>()
-            .map_err(|_| anyhow!("Invalid roll value: {}", parts[1]))?;
-        let yaw = parts[2].trim().parse::<f32>()
-            .map_err(|_| anyhow!("Invalid yaw value: {}", parts[2]))?;
+        // Try colon-separated format: x:y:z
+        if input.contains(':') {
+            let parts: Vec<&str> = input.split(':').collect();
+            if parts.len() != 3 {
+                return Err(anyhow!("Colon format must contain exactly 3 values: pitch:roll:yaw (got {})", parts.len()));
+            }
+            
+            let pitch = parts[0].trim().parse::<f32>()
+                .map_err(|_| anyhow!("Invalid pitch value: '{}'", parts[0]))?;
+            let roll = parts[1].trim().parse::<f32>()
+                .map_err(|_| anyhow!("Invalid roll value: '{}'", parts[1]))?;
+            let yaw = parts[2].trim().parse::<f32>()
+                .map_err(|_| anyhow!("Invalid yaw value: '{}'", parts[2]))?;
+            
+            return Ok((pitch, roll, yaw));
+        }
         
-        Ok((pitch, roll, yaw))
+        Err(anyhow!("Invalid single argument format. Use: pitch,roll,yaw or pitch:roll:yaw"))
     } else if args.len() == 3 {
-        // Traditional three separate arguments
+        // Three separate arguments
         let pitch = args[0].parse::<f32>()
-            .map_err(|_| anyhow!("Invalid pitch value: {}", args[0]))?;
+            .map_err(|_| anyhow!("Invalid pitch value: '{}'", args[0]))?;
         let roll = args[1].parse::<f32>()
-            .map_err(|_| anyhow!("Invalid roll value: {}", args[1]))?;
+            .map_err(|_| anyhow!("Invalid roll value: '{}'", args[1]))?;
         let yaw = args[2].parse::<f32>()
-            .map_err(|_| anyhow!("Invalid yaw value: {}", args[2]))?;
+            .map_err(|_| anyhow!("Invalid yaw value: '{}'", args[2]))?;
         
         Ok((pitch, roll, yaw))
     } else {
-        Err(anyhow!("Invalid arguments. Use either: 'set <pitch> <roll> <yaw>' or 'set \"[pitch,roll,yaw]\"'"))
+        Err(anyhow!("Invalid arguments. Use: 'pitch roll yaw', 'pitch,roll,yaw', or 'pitch:roll:yaw'"))
     }
 }
 
@@ -54,7 +75,7 @@ async fn main() -> Result<()> {
             Command::new("set")
                 .about("Set gimbal angles")
                 .arg(Arg::new("angles")
-                    .help("Angles: either 'pitch roll yaw' or '[pitch,roll,yaw]'")
+                    .help("Angles: 'pitch roll yaw', 'pitch,roll,yaw', or 'pitch:roll:yaw'")
                     .required(true)
                     .num_args(1..=3)
                     .allow_hyphen_values(true)
@@ -294,8 +315,8 @@ async fn main() -> Result<()> {
             println!("Example usage:");
             println!("  gimbal status");
             println!("  gimbal set 10.0 0.0 -15.0");
-            println!("  gimbal set \"[-10,0,15]\"");
-            println!("  gimbal set \"[1.5, -2.3, 0]\"");
+            println!("  gimbal set -10,0,15");
+            println!("  gimbal set 1.5:-2.3:0");
             println!("  gimbal center");
         }
     }

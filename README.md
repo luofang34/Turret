@@ -33,6 +33,8 @@ cargo build --release
 # Basic commands (auto-detects device)
 gimbal status
 gimbal set 10.0 0.0 -15.0
+gimbal set -10,0,15          # comma-separated
+gimbal set 1.5:-2.3:0        # colon-separated
 gimbal center
 gimbal version
 
