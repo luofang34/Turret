@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::{Arg, Command};
 
 mod device_scanner;
@@ -7,70 +7,109 @@ mod storm32;
 use device_scanner::DeviceScanner;
 use storm32::Storm32Gimbal;
 
+fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
+    // Check if first argument looks like an array format [x,y,z]
+    if args.len() == 1 && args[0].starts_with('[') && args[0].ends_with(']') {
+        let content = &args[0][1..args[0].len()-1]; // Remove [ and ]
+        let parts: Vec<&str> = content.split(',').collect();
+        
+        if parts.len() != 3 {
+            return Err(anyhow!("Array format must contain exactly 3 values: [pitch,roll,yaw]"));
+        }
+        
+        let pitch = parts[0].trim().parse::<f32>()
+            .map_err(|_| anyhow!("Invalid pitch value: {}", parts[0]))?;
+        let roll = parts[1].trim().parse::<f32>()
+            .map_err(|_| anyhow!("Invalid roll value: {}", parts[1]))?;
+        let yaw = parts[2].trim().parse::<f32>()
+            .map_err(|_| anyhow!("Invalid yaw value: {}", parts[2]))?;
+        
+        Ok((pitch, roll, yaw))
+    } else if args.len() == 3 {
+        // Traditional three separate arguments
+        let pitch = args[0].parse::<f32>()
+            .map_err(|_| anyhow!("Invalid pitch value: {}", args[0]))?;
+        let roll = args[1].parse::<f32>()
+            .map_err(|_| anyhow!("Invalid roll value: {}", args[1]))?;
+        let yaw = args[2].parse::<f32>()
+            .map_err(|_| anyhow!("Invalid yaw value: {}", args[2]))?;
+        
+        Ok((pitch, roll, yaw))
+    } else {
+        Err(anyhow!("Invalid arguments. Use either: 'set <pitch> <roll> <yaw>' or 'set \"[pitch,roll,yaw]\"'"))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let matches = Command::new("gimbal")
         .version("0.1.0")
         .about("STorM32 Gimbal Control using RC Commands")
+        .arg(Arg::new("device").short('d').long("device").help("Serial device path").value_name("DEVICE"))
+        .arg(Arg::new("auto").short('a').long("auto").help("Auto-detect device").action(clap::ArgAction::SetTrue))
         .subcommand(
             Command::new("set")
                 .about("Set gimbal angles")
-                .arg(Arg::new("pitch").help("Pitch angle in degrees").required(true))
-                .arg(Arg::new("roll").help("Roll angle in degrees").required(true))
-                .arg(Arg::new("yaw").help("Yaw angle in degrees").required(true))
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
+                .arg(Arg::new("angles")
+                    .help("Angles: either 'pitch roll yaw' or '[pitch,roll,yaw]'")
+                    .required(true)
+                    .num_args(1..=3)
+                    .allow_hyphen_values(true)
+                    .value_name("ANGLES"))
         )
         .subcommand(
             Command::new("center")
                 .about("Center gimbal (all axes to 0°)")
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
         )
         .subcommand(
             Command::new("status")
                 .about("Get current gimbal status")
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
         )
         .subcommand(
             Command::new("version")
                 .about("Get gimbal firmware version")
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
         )
         .subcommand(
             Command::new("version-str")
                 .about("Get gimbal firmware version strings")
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
         )
         .subcommand(
             Command::new("pitch")
                 .about("Set pitch axis (700-2300 or 0 to recenter)")
-                .arg(Arg::new("value").help("Pitch value").required(true))
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
+                .arg(Arg::new("value")
+                    .help("Pitch value")
+                    .required(true)
+                    .value_parser(clap::value_parser!(u16)))
         )
         .subcommand(
             Command::new("roll")
                 .about("Set roll axis (700-2300 or 0 to recenter)")
-                .arg(Arg::new("value").help("Roll value").required(true))
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
+                .arg(Arg::new("value")
+                    .help("Roll value")
+                    .required(true)
+                    .value_parser(clap::value_parser!(u16)))
         )
         .subcommand(
             Command::new("yaw")
                 .about("Set yaw axis (700-2300 or 0 to recenter)")
-                .arg(Arg::new("value").help("Yaw value").required(true))
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
+                .arg(Arg::new("value")
+                    .help("Yaw value")
+                    .required(true)
+                    .value_parser(clap::value_parser!(u16)))
         )
         .subcommand(
             Command::new("pan-mode")
                 .about("Set pan mode (0=off, 1=HOLDHOLDPAN, 2=HOLDHOLDHOLD, 3=PANPANPAN, 4=PANHOLDHOLD, 5=PANHOLDPAN)")
-                .arg(Arg::new("mode").help("Pan mode").required(true))
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
+                .arg(Arg::new("mode")
+                    .help("Pan mode")
+                    .required(true)
+                    .value_parser(clap::value_parser!(u8)))
         )
         .subcommand(
             Command::new("standby")
                 .about("Set standby mode")
                 .arg(Arg::new("enable").help("Enable standby (true/false)").required(true))
-                .arg(Arg::new("device").short('d').long("device").help("Serial device path"))
         )
-        .arg(Arg::new("auto").short('a').long("auto").help("Auto-detect device").action(clap::ArgAction::SetTrue))
         .get_matches();
 
     // Determine device path
@@ -101,12 +140,12 @@ async fn main() -> Result<()> {
 
     match matches.subcommand() {
         Some(("set", sub_matches)) => {
-            let pitch: f32 = sub_matches.get_one::<String>("pitch")
-                .unwrap().parse().expect("Invalid pitch angle");
-            let roll: f32 = sub_matches.get_one::<String>("roll")
-                .unwrap().parse().expect("Invalid roll angle");
-            let yaw: f32 = sub_matches.get_one::<String>("yaw")
-                .unwrap().parse().expect("Invalid yaw angle");
+            let angle_args: Vec<String> = sub_matches.get_many::<String>("angles")
+                .unwrap()
+                .cloned()
+                .collect();
+            
+            let (pitch, roll, yaw) = parse_angles(&angle_args)?;
             
             println!("Setting angles: pitch={:.1}°, roll={:.1}°, yaw={:.1}°", pitch, roll, yaw);
             gimbal.set_angles(pitch, roll, yaw).await?;
@@ -141,8 +180,7 @@ async fn main() -> Result<()> {
             }
         }
         Some(("pitch", sub_matches)) => {
-            let value: u16 = sub_matches.get_one::<String>("value")
-                .unwrap().parse().expect("Invalid pitch value");
+            let value = *sub_matches.get_one::<u16>("value").unwrap();
             
             if value == 0 {
                 println!("Recentering pitch axis...");
@@ -159,8 +197,7 @@ async fn main() -> Result<()> {
             }
         }
         Some(("roll", sub_matches)) => {
-            let value: u16 = sub_matches.get_one::<String>("value")
-                .unwrap().parse().expect("Invalid roll value");
+            let value = *sub_matches.get_one::<u16>("value").unwrap();
             
             if value == 0 {
                 println!("Recentering roll axis...");
@@ -177,8 +214,7 @@ async fn main() -> Result<()> {
             }
         }
         Some(("yaw", sub_matches)) => {
-            let value: u16 = sub_matches.get_one::<String>("value")
-                .unwrap().parse().expect("Invalid yaw value");
+            let value = *sub_matches.get_one::<u16>("value").unwrap();
             
             if value == 0 {
                 println!("Recentering yaw axis...");
@@ -195,8 +231,7 @@ async fn main() -> Result<()> {
             }
         }
         Some(("pan-mode", sub_matches)) => {
-            let mode: u8 = sub_matches.get_one::<String>("mode")
-                .unwrap().parse().expect("Invalid pan mode");
+            let mode = *sub_matches.get_one::<u8>("mode").unwrap();
             
             let mode_name = match mode {
                 0 => "OFF",
@@ -236,6 +271,8 @@ async fn main() -> Result<()> {
             println!("Example usage:");
             println!("  gimbal --auto status");
             println!("  gimbal set 10.0 0.0 -15.0");
+            println!("  gimbal set \"[-10,0,15]\"");
+            println!("  gimbal set \"[1.5, -2.3, 0]\"");
             println!("  gimbal center");
         }
     }
