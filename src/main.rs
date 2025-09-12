@@ -46,8 +46,7 @@ async fn main() -> Result<()> {
     let matches = Command::new("gimbal")
         .version("0.1.0")
         .about("STorM32 Gimbal Control using RC Commands")
-        .arg(Arg::new("device").short('d').long("device").help("Serial device path").value_name("DEVICE"))
-        .arg(Arg::new("auto").short('a').long("auto").help("Auto-detect device").action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("device").short('d').long("device").help("Serial device path (auto-detects if not specified)").value_name("DEVICE"))
         .arg(Arg::new("verbose").short('v').long("verbose")
             .help("Increase logging verbosity (-v=info, -vv=debug, -vvv=trace)")
             .action(clap::ArgAction::Count))
@@ -131,25 +130,31 @@ async fn main() -> Result<()> {
 
     // Determine device path
     let device_path = if let Some(device) = matches.get_one::<String>("device") {
+        // Manual device specification
+        info!("Using manually specified device: {}", device);
         device.clone()
-    } else if matches.get_flag("auto") {
-        let scanner = DeviceScanner::new();
-        scanner.find_storm32_device()
-            .ok_or_else(|| anyhow::anyhow!("No STorM32 device found"))?
     } else {
+        // Auto-detect STorM32 device
         let scanner = DeviceScanner::new();
-        let devices = scanner.list_all_devices();
-        println!("Available devices:");
-        for device in &devices {
-            println!("  {} - {:?}", device.port_name, device.port_type);
-        }
-        
-        if let Some(storm32_device) = scanner.find_storm32_device() {
-            println!("\nAuto-detected STorM32 device: {}", storm32_device);
-            info!("Auto-detected STorM32 device: {}", storm32_device);
-            storm32_device
-        } else {
-            return Err(anyhow::anyhow!("No STorM32 device found. Use --device to specify manually or --auto for auto-detection."));
+        match scanner.find_storm32_device() {
+            Some(device) => {
+                info!("Auto-detected STorM32 device: {}", device);
+                device
+            }
+            None => {
+                // Show available devices to help user
+                let devices = scanner.list_all_devices();
+                if !devices.is_empty() {
+                    error!("No STorM32 device auto-detected. Available devices:");
+                    for device in &devices {
+                        error!("  {} - {:?}", device.port_name, device.port_type);
+                    }
+                    error!("Use --device <path> to specify manually.");
+                } else {
+                    error!("No serial devices found.");
+                }
+                return Err(anyhow::anyhow!("No STorM32 device found"));
+            }
         }
     };
 
@@ -273,8 +278,8 @@ async fn main() -> Result<()> {
                 "true" | "1" | "on" | "enabled" => true,
                 "false" | "0" | "off" | "disabled" => false,
                 _ => {
-                    println!("Invalid standby value. Use true/false, 1/0, on/off, or enabled/disabled");
-                    return Ok(());
+                    error!("Invalid standby value: '{}'. Use true/false, 1/0, on/off, or enabled/disabled", enable_str);
+                    return Err(anyhow::anyhow!("Invalid standby value"));
                 }
             };
             
@@ -287,7 +292,7 @@ async fn main() -> Result<()> {
         _ => {
             println!("STorM32 Gimbal Control - Use --help for available commands");
             println!("Example usage:");
-            println!("  gimbal --auto status");
+            println!("  gimbal status");
             println!("  gimbal set 10.0 0.0 -15.0");
             println!("  gimbal set \"[-10,0,15]\"");
             println!("  gimbal set \"[1.5, -2.3, 0]\"");
