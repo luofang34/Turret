@@ -15,16 +15,11 @@ Command-line tool for STorM32 gimbal controllers. Uses the RC Commands protocol.
 
 Download the latest release from [Releases](../../releases) for your platform.
 
-### Build from Source
-
+OR：
+### From source
+With a recent [Rust](https://rustup.rs) installed:
 ```bash
-# Install Rust (if needed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Clone and build
-git clone https://github.com/luofang34/turret
-cd turret
-cargo build --release
+cargo intsall turret
 ```
 
 ## Usage
@@ -55,9 +50,18 @@ turret pan-mode 3         # PANPANPAN mode
 turret standby true
 ```
 
+## Develop
+With a recent [Rust](https://rustup.rs) installed:
+```bash
+# Clone and build
+git clone https://github.com/luofang34/turret
+cd turret
+cargo build --release
+```
+
 ## Protocol
 
-Uses STorM32 RC Commands protocol over serial (115200 baud).
+Uses [STorM32 RC Commands protocol](https://www.olliw.eu/storm32bgc-v1-wiki/Serial_Communication#Serial_Communication_-_RC_Commands) over serial (115200 baud).
 
 Message format: `[0xFA][len][cmd][payload][crc16]`
 
