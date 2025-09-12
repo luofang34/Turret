@@ -9,7 +9,7 @@ repository = "https://github.com/luofang34/turret"
 homepage = "https://github.com/luofang34/turret"
 documentation = "https://docs.rs/turret"
 readme = "README.md"
-keywords = ["turret", "gimbal", "storm32", "rc-commands", "serial", "bgc"]
+keywords = ["turret", "gimbal", "storm32", "serial", "bgc"]
 categories = ["command-line-utilities", "hardware-support"]
 rust-version = "1.70"
 
