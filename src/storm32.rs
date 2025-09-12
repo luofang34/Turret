@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use log::{debug, trace, warn};
 use serialport::SerialPort;
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -240,7 +241,7 @@ impl Storm32Gimbal {
     fn send_rc_command(&mut self, message: &RCMessage) -> Result<Vec<u8>> {
         // Serialize and send message
         let data = message.serialize();
-        eprintln!("DEBUG: Sending command: {:02X?}", data);
+        trace!("Sending RC command: {:02X?}", data);
         self.port.write_all(&data)
             .map_err(|e| anyhow!("Failed to write to serial port: {}", e))?;
         self.port.flush()
@@ -284,7 +285,7 @@ impl Storm32Gimbal {
             return Err(anyhow!("No response received"));
         }
         
-        eprintln!("DEBUG: Received response: {:02X?}", &buffer[..total_bytes]);
+        trace!("Received RC response: {:02X?}", &buffer[..total_bytes]);
         RCMessage::parse_response(&buffer[..total_bytes])
     }
     
@@ -371,7 +372,7 @@ impl Storm32Gimbal {
             Ok(response) => {
                 // Check if we got a meaningful response
                 if response.is_empty() {
-                    eprintln!("Warning: GetDataFields command returned empty response (possibly unsupported)");
+                    debug!("GetDataFields command returned empty response (possibly unsupported)");
                     return Ok(());
                 }
                 self.parse_data_fields_response(&response)?;
@@ -380,7 +381,7 @@ impl Storm32Gimbal {
             Err(e) => {
                 // If we can't get current angles, that's not necessarily fatal
                 // Just log the error and continue
-                eprintln!("Warning: Could not update gimbal status: {}", e);
+                warn!("Could not update gimbal status: {}", e);
                 Ok(())
             }
         }

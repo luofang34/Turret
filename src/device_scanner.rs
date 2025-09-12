@@ -1,3 +1,4 @@
+use log::debug;
 use serialport::{SerialPortInfo, SerialPortType};
 use std::fs;
 
@@ -28,7 +29,7 @@ impl DeviceScanner {
                 }
             }
             Err(e) => {
-                eprintln!("Error enumerating serial ports: {}", e);
+                debug!("Error enumerating serial ports: {}", e);
             }
         }
         None
