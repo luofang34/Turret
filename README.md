@@ -4,10 +4,13 @@ Command-line tool for STorM32 gimbal controllers. Uses the RC Commands protocol.
 
 ## Features
 
+- **CLI Mode**: Direct command-line control
+- **Daemon Mode**: Background service with Unix socket IPC and MAVLink
 - Auto-detects STorM32 devices
 - Set gimbal angles, pan modes, standby
 - Query status and firmware info
 - Structured logging with verbosity levels
+- Priority-based command arbitration
 
 ## Installation
 
@@ -23,6 +26,8 @@ cargo install turret
 ```
 
 ## Usage
+
+### CLI Mode (Direct Control)
 
 ```bash
 # Basic commands (auto-detects device)
@@ -49,6 +54,41 @@ turret roll 0             # recenter roll
 turret pan-mode 3         # PANPANPAN mode
 turret standby true
 ```
+
+### Daemon Mode (Background Service)
+
+```bash
+# Start daemon (auto-detects device)
+turret --daemon
+
+# Or with custom config
+turret --daemon --config turret.yaml
+
+# Connect via Unix socket (JSON commands)
+echo '{"cmd": "status"}' | nc -U /tmp/turret.sock
+echo '{"cmd": "set", "pitch": 10.0, "roll": 0.0, "yaw": -15.0}' | nc -U /tmp/turret.sock
+echo '{"cmd": "center"}' | nc -U /tmp/turret.sock
+
+# MAVLink on UDP:14550 - use pymavlink or QGroundControl
+# Implements Gimbal Manager protocol
+```
+
+**Configuration** (`turret.yaml`):
+```yaml
+device:
+  path: auto
+
+ipc:
+  socket_path: /tmp/turret.sock
+
+mavlink:
+  enabled: true
+  udp_port: 14550
+  sysid: 1
+  compid: 154
+```
+
+**Priority System**: MAVLink autopilot (highest) > GCS > Unix socket > CLI (lowest)
 
 ## Develop
 With a recent [Rust](https://rustup.rs) installed:

@@ -1,0 +1,28 @@
+[Unit]
+Description=Turret Gimbal Manager Service
+Documentation=https://github.com/luofang34/turret
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/turret
+ExecStart=/usr/local/bin/turret --daemon --config /etc/turret/turret.yaml
+Restart=always
+RestartSec=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=turret
+
+# Security hardening (optional, adjust as needed)
+# NoNewPrivileges=true
+# PrivateTmp=true
+# ProtectSystem=strict
+# ProtectHome=true
+# ReadWritePaths=/tmp
+
+[Install]
+WantedBy=multi-user.target

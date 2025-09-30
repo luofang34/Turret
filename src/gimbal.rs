@@ -1,6 +1,4 @@
 use anyhow::Result;
-use serialport::SerialPort;
-use std::time::Duration;
 
 /// Gimbal attitude (Euler angles in degrees)
 #[derive(Debug, Clone, Copy)]
@@ -27,12 +25,12 @@ pub trait GimbalDevice: Send {
     }
 
     /// Set pan mode (optional, may not be supported)
-    fn set_pan_mode(&mut self, mode: u8) -> Result<()> {
+    fn set_pan_mode(&mut self, _mode: u8) -> Result<()> {
         Err(anyhow::anyhow!("Pan mode not supported by {} protocol", self.protocol_name()))
     }
 
     /// Set standby mode (optional, may not be supported)
-    fn set_standby(&mut self, enabled: bool) -> Result<()> {
+    fn set_standby(&mut self, _enabled: bool) -> Result<()> {
         Err(anyhow::anyhow!("Standby mode not supported by {} protocol", self.protocol_name()))
     }
 

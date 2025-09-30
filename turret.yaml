@@ -1,0 +1,42 @@
+# Turret Daemon Configuration
+#
+# This file configures the Turret gimbal manager when running in daemon mode.
+# To use: turret --daemon --config turret.yaml
+
+# Device configuration
+device:
+  # Serial device path
+  # Use "auto" for automatic detection, or specify a path like "/dev/ttyACM0"
+  path: auto
+
+# Unix socket IPC configuration
+ipc:
+  # Path to Unix domain socket for local IPC
+  # Other processes can connect to this socket to control the gimbal
+  socket_path: /tmp/turret.sock
+
+# MAVLink configuration
+mavlink:
+  # Enable MAVLink Gimbal Manager protocol
+  enabled: true
+
+  # Transport type: "udp" or "serial"
+  transport: udp
+
+  # UDP port for MAVLink (used if transport is "udp")
+  # Default: 14550 (standard MAVLink port)
+  udp_port: 14550
+
+  # Serial device for MAVLink (used if transport is "serial")
+  # serial_device: /dev/ttyUSB1
+
+  # MAVLink system ID (1 = autopilot, 2+ = companion computer)
+  sysid: 1
+
+  # MAVLink component ID (154 = MAV_COMP_ID_GIMBAL)
+  compid: 154
+
+# Logging configuration
+logging:
+  # Log level: "trace", "debug", "info", "warn", "error"
+  level: info

@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::{Arg, Command};
 use log::{info, debug, error, LevelFilter};
 
+mod daemon;
 mod device_scanner;
 mod gimbal;
 mod protocols;
@@ -75,7 +76,8 @@ fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let matches = Command::new("turret")
         .version("0.1.0")
         .about("STorM32 Gimbal Control using RC Commands")
@@ -83,6 +85,15 @@ fn main() -> Result<()> {
         .arg(Arg::new("verbose").short('v').long("verbose")
             .help("Increase logging verbosity (-v=info, -vv=debug, -vvv=trace)")
             .action(clap::ArgAction::Count))
+        .arg(Arg::new("daemon")
+            .long("daemon")
+            .help("Run in daemon mode (background service with IPC and MAVLink)")
+            .action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("config")
+            .short('c')
+            .long("config")
+            .help("Path to configuration file (daemon mode only)")
+            .value_name("CONFIG"))
         .subcommand(
             Command::new("set")
                 .about("Set gimbal angles")
@@ -160,6 +171,13 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .filter_level(log_level)
         .init();
+
+    // Check if running in daemon mode
+    if matches.get_flag("daemon") {
+        info!("Starting in daemon mode...");
+        let config_path = matches.get_one::<String>("config").map(|s| s.to_string());
+        return daemon::run_daemon(config_path).await;
+    }
 
     // Determine device path
     let device_path = if let Some(device) = matches.get_one::<String>("device") {
