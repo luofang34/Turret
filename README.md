@@ -15,11 +15,11 @@ Command-line tool for STorM32 gimbal controllers. Uses the RC Commands protocol.
 
 Download the latest release from [Releases](../../releases) for your platform.
 
-OR：
+OR:
 ### From source
 With a recent [Rust](https://rustup.rs) installed:
 ```bash
-cargo intsall turret
+cargo install turret
 ```
 
 ## Usage
