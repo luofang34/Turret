@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use log::{debug, trace, warn};
 use serialport::SerialPort;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
@@ -140,7 +141,7 @@ impl RCMessage {
     // CRC16 x25 algorithm (same as Mavlink)
     fn calculate_crc16(&self, data: &[u8]) -> u16 {
         let mut crc: u16 = 0xFFFF;
-        
+
         for &byte in data {
             crc ^= byte as u16;
             for _ in 0..8 {
@@ -151,8 +152,26 @@ impl RCMessage {
                 }
             }
         }
-        
+
         !crc
+    }
+
+    // Static version for verification (doesn't need self)
+    fn verify_crc16(data: &[u8], expected_crc: u16) -> bool {
+        let mut crc: u16 = 0xFFFF;
+
+        for &byte in data {
+            crc ^= byte as u16;
+            for _ in 0..8 {
+                if (crc & 1) != 0 {
+                    crc = (crc >> 1) ^ 0x8408;
+                } else {
+                    crc >>= 1;
+                }
+            }
+        }
+
+        !crc == expected_crc
     }
     
     // Parse incoming message from gimbal
@@ -203,9 +222,24 @@ impl RCMessage {
         } else {
             vec![]  // Empty payload for ACK responses
         };
-        
-        // TODO: Verify CRC if needed
-        
+
+        // Verify CRC16 (last 2 bytes of message)
+        if data.len() >= expected_total {
+            let crc_start = payload_end;
+            if crc_start + 2 <= data.len() {
+                let received_crc = u16::from_le_bytes([data[crc_start], data[crc_start + 1]]);
+
+                // CRC is calculated over: length byte + command byte + payload
+                let crc_data = &data[1..payload_end];
+
+                if !Self::verify_crc16(crc_data, received_crc) {
+                    return Err(anyhow!("CRC verification failed: expected valid CRC, got 0x{:04X}", received_crc));
+                }
+
+                trace!("CRC verification passed: 0x{:04X}", received_crc);
+            }
+        }
+
         Ok(payload)
     }
 }
@@ -216,12 +250,44 @@ pub struct Storm32Gimbal {
 }
 
 impl Storm32Gimbal {
+    // Validate device path for security
+    fn validate_device_path(device_path: &str) -> Result<()> {
+        // Reject path traversal attempts
+        if device_path.contains("..") {
+            return Err(anyhow!("Invalid device path: path traversal detected"));
+        }
+
+        // Check if path exists
+        let path = Path::new(device_path);
+        if !path.exists() {
+            return Err(anyhow!("Device path does not exist: {}", device_path));
+        }
+
+        // On Unix systems, verify it's a character device
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            let metadata = std::fs::metadata(path)
+                .map_err(|e| anyhow!("Cannot access device path: {}", e))?;
+            let file_type = metadata.file_type();
+
+            if !file_type.is_char_device() {
+                return Err(anyhow!("Path is not a character device: {}", device_path));
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn new(device_path: &str) -> Result<Self> {
+        // Validate device path
+        Self::validate_device_path(device_path)?;
+
         let port = serialport::new(device_path, 115200)
             .timeout(Duration::from_millis(1000))
             .open()
             .map_err(|e| anyhow!("Failed to open serial port {}: {}", device_path, e))?;
-            
+
         let gimbal = Self {
             port,
             current_status: GimbalStatus {
@@ -229,10 +295,10 @@ impl Storm32Gimbal {
                 sp: GimbalAngles { pitch: 0.0, roll: 0.0, yaw: 0.0 },
             },
         };
-        
+
         Ok(gimbal)
     }
-    
+
     pub fn get_status(&self) -> GimbalStatus {
         self.current_status
     }
@@ -289,11 +355,43 @@ impl Storm32Gimbal {
         RCMessage::parse_response(&buffer[..total_bytes])
     }
     
+    // Validate angle values (typical gimbal range is -180 to +180 degrees)
+    fn validate_angle(angle: f32, name: &str) -> Result<()> {
+        if !angle.is_finite() {
+            return Err(anyhow!("{} must be a finite number", name));
+        }
+        if angle < -180.0 || angle > 180.0 {
+            return Err(anyhow!("{} must be between -180° and +180° (got {:.1}°)", name, angle));
+        }
+        Ok(())
+    }
+
+    // Validate RC values (700-2300 or 0 for recenter)
+    fn validate_rc_value(value: u16, name: &str) -> Result<()> {
+        if value != 0 && (value < 700 || value > 2300) {
+            return Err(anyhow!("{} must be 0 (recenter) or 700-2300 (got {})", name, value));
+        }
+        Ok(())
+    }
+
+    // Validate pan mode (0-5 only)
+    fn validate_pan_mode(mode: u8) -> Result<()> {
+        if mode > 5 {
+            return Err(anyhow!("Pan mode must be 0-5 (got {})", mode));
+        }
+        Ok(())
+    }
+
     // Set gimbal angles using CMD_SETANGLE (float precision)
     pub async fn set_angles(&mut self, pitch: f32, roll: f32, yaw: f32) -> Result<()> {
+        // Validate inputs
+        Self::validate_angle(pitch, "Pitch")?;
+        Self::validate_angle(roll, "Roll")?;
+        Self::validate_angle(yaw, "Yaw")?;
+
         let payload = RCMessage::create_set_angle_payload(pitch, roll, yaw);
         let message = RCMessage::new(RCCommand::SetAngle, payload);
-        
+
         match self.send_rc_command(&message) {
             Ok(_response) => {
                 // Update our setpoint immediately
@@ -317,31 +415,37 @@ impl Storm32Gimbal {
     
     // Set individual pitch axis using CMD_SETPITCH
     pub async fn set_pitch(&mut self, value: u16) -> Result<()> {
+        Self::validate_rc_value(value, "Pitch")?;
+
         let payload = RCMessage::create_single_axis_payload(value);
         let message = RCMessage::new(RCCommand::SetPitch, payload);
-        
+
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
             Err(e) => Err(anyhow!("Failed to set pitch: {}", e)),
         }
     }
-    
+
     // Set individual roll axis using CMD_SETROLL
     pub async fn set_roll(&mut self, value: u16) -> Result<()> {
+        Self::validate_rc_value(value, "Roll")?;
+
         let payload = RCMessage::create_single_axis_payload(value);
         let message = RCMessage::new(RCCommand::SetRoll, payload);
-        
+
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
             Err(e) => Err(anyhow!("Failed to set roll: {}", e)),
         }
     }
-    
+
     // Set individual yaw axis using CMD_SETYAW
     pub async fn set_yaw(&mut self, value: u16) -> Result<()> {
+        Self::validate_rc_value(value, "Yaw")?;
+
         let payload = RCMessage::create_single_axis_payload(value);
         let message = RCMessage::new(RCCommand::SetYaw, payload);
-        
+
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
             Err(e) => Err(anyhow!("Failed to set yaw: {}", e)),
@@ -418,9 +522,11 @@ impl Storm32Gimbal {
     
     // Set pan mode using CMD_SETPANMODE
     pub async fn set_pan_mode(&mut self, mode: u8) -> Result<()> {
+        Self::validate_pan_mode(mode)?;
+
         let payload = RCMessage::create_set_pan_mode_payload(mode);
         let message = RCMessage::new(RCCommand::SetPanMode, payload);
-        
+
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
             Err(e) => Err(anyhow!("Failed to set pan mode: {}", e)),
