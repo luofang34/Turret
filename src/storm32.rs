@@ -162,22 +162,18 @@ impl RCMessage {
         message
     }
     
-    // CRC16 x25 algorithm (same as Mavlink)
+    // CRC16 x25 algorithm (same as Mavlink and STorM32)
+    // Based on official STorM32 implementation
     fn calculate_crc16(&self, data: &[u8]) -> u16 {
         let mut crc: u16 = 0xFFFF;
 
         for &byte in data {
-            crc ^= byte as u16;
-            for _ in 0..8 {
-                if (crc & 1) != 0 {
-                    crc = (crc >> 1) ^ 0x8408;
-                } else {
-                    crc >>= 1;
-                }
-            }
+            let tmp = byte ^ (crc as u8);
+            let tmp2 = tmp ^ (tmp << 4);
+            crc = (crc >> 8) ^ ((tmp2 as u16) << 8) ^ ((tmp2 as u16) << 3) ^ ((tmp2 as u16) >> 4);
         }
 
-        !crc
+        crc
     }
 
     // Static version for verification (doesn't need self)
@@ -185,17 +181,12 @@ impl RCMessage {
         let mut crc: u16 = 0xFFFF;
 
         for &byte in data {
-            crc ^= byte as u16;
-            for _ in 0..8 {
-                if (crc & 1) != 0 {
-                    crc = (crc >> 1) ^ 0x8408;
-                } else {
-                    crc >>= 1;
-                }
-            }
+            let tmp = byte ^ (crc as u8);
+            let tmp2 = tmp ^ (tmp << 4);
+            crc = (crc >> 8) ^ ((tmp2 as u16) << 8) ^ ((tmp2 as u16) << 3) ^ ((tmp2 as u16) >> 4);
         }
 
-        !crc == expected_crc
+        crc == expected_crc
     }
     
     // Parse incoming message from gimbal
@@ -217,51 +208,42 @@ impl RCMessage {
         }
         
         let length = data[1] as usize;
-        let expected_total = length + 4;  // start + length + payload + 2-byte CRC
-        
+        // Length field specifies payload size (not including command byte)
+        // Total message: start(1) + length(1) + command(1) + payload(length) + CRC(2)
+        let expected_total = 1 + 1 + 1 + length + 2;
+
         if data.len() < expected_total {
-            // For SET commands, sometimes the response is just an ACK without payload
-            // Try to handle minimal responses gracefully
-            if data.len() >= 3 && length <= 1 {
-                // Minimal ACK response with just command byte
-                return Ok(vec![]);  // Empty payload for ACK
-            }
             return Err(Storm32Error::ProtocolError(format!("Incomplete message: got {} bytes, expected {}", data.len(), expected_total)));
         }
-        
-        // Extract payload (skip start, length bytes only - payload includes command byte)
-        let payload_start = 2;
+
+        // Extract command byte and payload
+        let command_byte = data[2];
+        let payload_start = 3;
         let payload_end = payload_start + length;
-        
-        if payload_end > data.len() - 2 {  // -2 for CRC
-            // Handle case where there's no payload (just ACK)
-            if length == 1 && data.len() >= 5 {
-                return Ok(vec![]);  // Empty payload
-            }
-            return Err(Storm32Error::ProtocolError("Invalid payload length".to_string()));
-        }
-        
-        let payload = if payload_end > payload_start {
+
+        let payload = if length > 0 {
             data[payload_start..payload_end].to_vec()
         } else {
-            vec![]  // Empty payload for ACK responses
+            vec![]  // Empty payload (just command byte)
         };
 
         // Verify CRC16 (last 2 bytes of message)
-        if data.len() >= expected_total {
-            let crc_start = payload_end;
-            if crc_start + 2 <= data.len() {
-                let received_crc = u16::from_le_bytes([data[crc_start], data[crc_start + 1]]);
+        let crc_start = payload_end;
+        if crc_start + 2 <= data.len() {
+            let received_crc = u16::from_le_bytes([data[crc_start], data[crc_start + 1]]);
 
-                // CRC is calculated over: length byte + command byte + payload
-                let crc_data = &data[1..payload_end];
+            // CRC is calculated over: length byte + command byte + payload
+            // This is data[1] through data[payload_end-1]
+            let crc_data = &data[1..payload_end];
 
-                if !Self::verify_crc16(crc_data, received_crc) {
-                    return Err(Storm32Error::CrcError(received_crc));
-                }
-
-                trace!("CRC verification passed: 0x{:04X}", received_crc);
+            if !Self::verify_crc16(crc_data, received_crc) {
+                debug!("CRC verification failed: expected valid CRC, got 0x{:04X}", received_crc);
+                debug!("  Data for CRC: {:02X?}", crc_data);
+                debug!("  Command byte: 0x{:02X}, Length: {}, Payload: {:02X?}", command_byte, length, payload);
+                return Err(Storm32Error::CrcError(received_crc));
             }
+
+            trace!("CRC verification passed: 0x{:04X}", received_crc);
         }
 
         Ok(payload)
