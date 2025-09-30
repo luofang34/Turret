@@ -64,7 +64,7 @@ fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let matches = Command::new("gimbal")
+    let matches = Command::new("turret")
         .version("0.1.0")
         .about("STorM32 Gimbal Control using RC Commands")
         .arg(Arg::new("device").short('d').long("device").help("Serial device path (auto-detects if not specified)").value_name("DEVICE"))
@@ -313,11 +313,11 @@ async fn main() -> Result<()> {
         _ => {
             println!("STorM32 Gimbal Control - Use --help for available commands");
             println!("Example usage:");
-            println!("  gimbal status");
-            println!("  gimbal set 10.0 0.0 -15.0");
-            println!("  gimbal set -10,0,15");
-            println!("  gimbal set 1.5:-2.3:0");
-            println!("  gimbal center");
+            println!("  turret status");
+            println!("  turret set 10.0 0.0 -15.0");
+            println!("  turret set -10,0,15");
+            println!("  turret set 1.5:-2.3:0");
+            println!("  turret center");
         }
     }
 
