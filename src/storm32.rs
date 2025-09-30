@@ -383,7 +383,7 @@ impl Storm32Gimbal {
     }
 
     // Set gimbal angles using CMD_SETANGLE (float precision)
-    pub async fn set_angles(&mut self, pitch: f32, roll: f32, yaw: f32) -> Result<()> {
+    pub fn set_angles(&mut self, pitch: f32, roll: f32, yaw: f32) -> Result<()> {
         // Validate inputs
         Self::validate_angle(pitch, "Pitch")?;
         Self::validate_angle(roll, "Roll")?;
@@ -403,7 +403,7 @@ impl Storm32Gimbal {
     }
     
     // Set gimbal angles using CMD_SETPITCHROLLYAW (RC values 700-2300)
-    pub async fn set_angles_rc(&mut self, pitch: u16, roll: u16, yaw: u16) -> Result<()> {
+    pub fn set_angles_rc(&mut self, pitch: u16, roll: u16, yaw: u16) -> Result<()> {
         let payload = RCMessage::create_set_pitch_roll_yaw_payload(pitch, roll, yaw);
         let message = RCMessage::new(RCCommand::SetPitchRollYaw, payload);
         
@@ -414,7 +414,7 @@ impl Storm32Gimbal {
     }
     
     // Set individual pitch axis using CMD_SETPITCH
-    pub async fn set_pitch(&mut self, value: u16) -> Result<()> {
+    pub fn set_pitch(&mut self, value: u16) -> Result<()> {
         Self::validate_rc_value(value, "Pitch")?;
 
         let payload = RCMessage::create_single_axis_payload(value);
@@ -427,7 +427,7 @@ impl Storm32Gimbal {
     }
 
     // Set individual roll axis using CMD_SETROLL
-    pub async fn set_roll(&mut self, value: u16) -> Result<()> {
+    pub fn set_roll(&mut self, value: u16) -> Result<()> {
         Self::validate_rc_value(value, "Roll")?;
 
         let payload = RCMessage::create_single_axis_payload(value);
@@ -440,7 +440,7 @@ impl Storm32Gimbal {
     }
 
     // Set individual yaw axis using CMD_SETYAW
-    pub async fn set_yaw(&mut self, value: u16) -> Result<()> {
+    pub fn set_yaw(&mut self, value: u16) -> Result<()> {
         Self::validate_rc_value(value, "Yaw")?;
 
         let payload = RCMessage::create_single_axis_payload(value);
@@ -453,20 +453,20 @@ impl Storm32Gimbal {
     }
     
     // Recenter individual axes (value = 0)
-    pub async fn recenter_pitch(&mut self) -> Result<()> {
-        self.set_pitch(0).await
+    pub fn recenter_pitch(&mut self) -> Result<()> {
+        self.set_pitch(0)
     }
-    
-    pub async fn recenter_roll(&mut self) -> Result<()> {
-        self.set_roll(0).await
+
+    pub fn recenter_roll(&mut self) -> Result<()> {
+        self.set_roll(0)
     }
-    
-    pub async fn recenter_yaw(&mut self) -> Result<()> {
-        self.set_yaw(0).await
+
+    pub fn recenter_yaw(&mut self) -> Result<()> {
+        self.set_yaw(0)
     }
     
     // Get current gimbal status using CMD_GETDATAFIELDS
-    pub async fn update_status(&mut self) -> Result<()> {
+    pub fn update_status(&mut self) -> Result<()> {
         // Request IMU1 angles (0x0020) which contains current angles
         let bitmask = 0x0020u16; // LIVEDATA_IMU1ANGLES
         let payload = RCMessage::create_get_data_fields_payload(bitmask);
@@ -521,7 +521,7 @@ impl Storm32Gimbal {
     }
     
     // Set pan mode using CMD_SETPANMODE
-    pub async fn set_pan_mode(&mut self, mode: u8) -> Result<()> {
+    pub fn set_pan_mode(&mut self, mode: u8) -> Result<()> {
         Self::validate_pan_mode(mode)?;
 
         let payload = RCMessage::create_set_pan_mode_payload(mode);
@@ -534,7 +534,7 @@ impl Storm32Gimbal {
     }
     
     // Set standby mode using CMD_SETSTANDBY
-    pub async fn set_standby(&mut self, enabled: bool) -> Result<()> {
+    pub fn set_standby(&mut self, enabled: bool) -> Result<()> {
         let state = if enabled { 1u8 } else { 0u8 };
         let payload = RCMessage::create_set_standby_payload(state);
         let message = RCMessage::new(RCCommand::SetStandby, payload);
@@ -546,7 +546,7 @@ impl Storm32Gimbal {
     }
     
     // Get firmware version using CMD_GETVERSION
-    pub async fn get_version(&mut self) -> Result<String> {
+    pub fn get_version(&mut self) -> Result<String> {
         let message = RCMessage::new(RCCommand::GetVersion, Vec::new());
         
         match self.send_rc_command(&message) {
@@ -569,8 +569,8 @@ impl Storm32Gimbal {
         }
     }
     
-    // Get firmware version string using CMD_GETVERSIONSTR  
-    pub async fn get_version_string(&mut self) -> Result<String> {
+    // Get firmware version string using CMD_GETVERSIONSTR
+    pub fn get_version_string(&mut self) -> Result<String> {
         let message = RCMessage::new(RCCommand::GetVersionStr, Vec::new());
         
         match self.send_rc_command(&message) {

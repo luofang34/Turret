@@ -62,8 +62,7 @@ fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let matches = Command::new("turret")
         .version("0.1.0")
         .about("STorM32 Gimbal Control using RC Commands")
@@ -192,49 +191,49 @@ async fn main() -> Result<()> {
             let (pitch, roll, yaw) = parse_angles(&angle_args)?;
             
             info!("Setting angles: pitch={:.1}°, roll={:.1}°, yaw={:.1}°", pitch, roll, yaw);
-            gimbal.set_angles(pitch, roll, yaw).await?;
+            gimbal.set_angles(pitch, roll, yaw)?;
             info!("Angles set successfully");
         }
         Some(("center", _)) => {
             info!("Centering gimbal...");
-            gimbal.set_angles(0.0, 0.0, 0.0).await?;
+            gimbal.set_angles(0.0, 0.0, 0.0)?;
             info!("Gimbal centered");
         }
         Some(("status", _)) => {
             debug!("Getting gimbal status...");
-            gimbal.update_status().await?;
+            gimbal.update_status()?;
             let status = gimbal.get_status();
-            println!("Current angles (PV): pitch={:.1}°, roll={:.1}°, yaw={:.1}°", 
+            println!("Current angles (PV): pitch={:.1}°, roll={:.1}°, yaw={:.1}°",
                      status.pv.pitch, status.pv.roll, status.pv.yaw);
-            println!("Target angles (SP):  pitch={:.1}°, roll={:.1}°, yaw={:.1}°", 
+            println!("Target angles (SP):  pitch={:.1}°, roll={:.1}°, yaw={:.1}°",
                      status.sp.pitch, status.sp.roll, status.sp.yaw);
         }
         Some(("version", _)) => {
             debug!("Getting firmware version...");
-            match gimbal.get_version().await {
+            match gimbal.get_version() {
                 Ok(version) => println!("Firmware version: {}", version),
                 Err(e) => error!("Failed to get version: {}", e),
             }
         }
         Some(("version-str", _)) => {
             debug!("Getting firmware version strings...");
-            match gimbal.get_version_string().await {
+            match gimbal.get_version_string() {
                 Ok(version) => println!("{}", version),
                 Err(e) => error!("Failed to get version string: {}", e),
             }
         }
         Some(("pitch", sub_matches)) => {
             let value = *sub_matches.get_one::<u16>("value").unwrap();
-            
+
             if value == 0 {
                 info!("Recentering pitch axis...");
-                match gimbal.recenter_pitch().await {
+                match gimbal.recenter_pitch() {
                     Ok(_) => info!("Pitch axis recentered"),
                     Err(e) => error!("Failed to recenter pitch: {}", e),
                 }
             } else {
                 info!("Setting pitch to {}...", value);
-                match gimbal.set_pitch(value).await {
+                match gimbal.set_pitch(value) {
                     Ok(_) => info!("Pitch set successfully"),
                     Err(e) => error!("Failed to set pitch: {}", e),
                 }
@@ -242,16 +241,16 @@ async fn main() -> Result<()> {
         }
         Some(("roll", sub_matches)) => {
             let value = *sub_matches.get_one::<u16>("value").unwrap();
-            
+
             if value == 0 {
                 info!("Recentering roll axis...");
-                match gimbal.recenter_roll().await {
+                match gimbal.recenter_roll() {
                     Ok(_) => info!("Roll axis recentered"),
                     Err(e) => error!("Failed to recenter roll: {}", e),
                 }
             } else {
                 info!("Setting roll to {}...", value);
-                match gimbal.set_roll(value).await {
+                match gimbal.set_roll(value) {
                     Ok(_) => info!("Roll set successfully"),
                     Err(e) => error!("Failed to set roll: {}", e),
                 }
@@ -259,16 +258,16 @@ async fn main() -> Result<()> {
         }
         Some(("yaw", sub_matches)) => {
             let value = *sub_matches.get_one::<u16>("value").unwrap();
-            
+
             if value == 0 {
                 info!("Recentering yaw axis...");
-                match gimbal.recenter_yaw().await {
+                match gimbal.recenter_yaw() {
                     Ok(_) => info!("Yaw axis recentered"),
                     Err(e) => error!("Failed to recenter yaw: {}", e),
                 }
             } else {
                 info!("Setting yaw to {}...", value);
-                match gimbal.set_yaw(value).await {
+                match gimbal.set_yaw(value) {
                     Ok(_) => info!("Yaw set successfully"),
                     Err(e) => error!("Failed to set yaw: {}", e),
                 }
@@ -288,7 +287,7 @@ async fn main() -> Result<()> {
             };
             
             info!("Setting pan mode to {} ({})...", mode, mode_name);
-            match gimbal.set_pan_mode(mode).await {
+            match gimbal.set_pan_mode(mode) {
                 Ok(_) => info!("Pan mode set successfully"),
                 Err(e) => error!("Failed to set pan mode: {}", e),
             }
@@ -305,7 +304,7 @@ async fn main() -> Result<()> {
             };
             
             info!("Setting standby mode to {}...", if enable { "enabled" } else { "disabled" });
-            match gimbal.set_standby(enable).await {
+            match gimbal.set_standby(enable) {
                 Ok(_) => info!("Standby mode set successfully"),
                 Err(e) => error!("Failed to set standby mode: {}", e),
             }
