@@ -617,3 +617,141 @@ impl Storm32Gimbal {
         self.send_rc_command(&message)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_crc16_calculation() {
+        let msg = RCMessage::new(RCCommand::GetVersion, Vec::new());
+        let data = vec![0u8, 1u8]; // length=0, command=1
+        let crc = msg.calculate_crc16(&data);
+        // CRC should be calculated correctly
+        assert_ne!(crc, 0);
+    }
+
+    #[test]
+    fn test_crc16_verification() {
+        // Test with known good CRC
+        let data = vec![0u8, 1u8];
+        let msg = RCMessage::new(RCCommand::GetVersion, Vec::new());
+        let crc = msg.calculate_crc16(&data);
+
+        // Verify should pass with correct CRC
+        assert!(RCMessage::verify_crc16(&data, crc));
+
+        // Verify should fail with incorrect CRC
+        assert!(!RCMessage::verify_crc16(&data, crc.wrapping_add(1)));
+    }
+
+    #[test]
+    fn test_set_angle_payload() {
+        let payload = RCMessage::create_set_angle_payload(10.0, 0.0, -15.0);
+
+        // Should be 14 bytes: 3 floats (12 bytes) + flags (1) + type (1)
+        assert_eq!(payload.len(), 14);
+
+        // Check pitch value (little-endian float)
+        let pitch = f32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        assert_eq!(pitch, 10.0);
+
+        // Check flags and type
+        assert_eq!(payload[12], 0x00); // flags
+        assert_eq!(payload[13], 0x00); // type
+    }
+
+    #[test]
+    fn test_single_axis_payload() {
+        let payload = RCMessage::create_single_axis_payload(1500);
+
+        // Should be 2 bytes
+        assert_eq!(payload.len(), 2);
+
+        // Check value (little-endian u16)
+        let value = u16::from_le_bytes([payload[0], payload[1]]);
+        assert_eq!(value, 1500);
+    }
+
+    #[test]
+    fn test_angle_validation() {
+        // Valid angles
+        assert!(Storm32Gimbal::validate_angle(0.0, "Test").is_ok());
+        assert!(Storm32Gimbal::validate_angle(180.0, "Test").is_ok());
+        assert!(Storm32Gimbal::validate_angle(-180.0, "Test").is_ok());
+        assert!(Storm32Gimbal::validate_angle(45.5, "Test").is_ok());
+
+        // Invalid angles
+        assert!(Storm32Gimbal::validate_angle(181.0, "Test").is_err());
+        assert!(Storm32Gimbal::validate_angle(-181.0, "Test").is_err());
+        assert!(Storm32Gimbal::validate_angle(f32::NAN, "Test").is_err());
+        assert!(Storm32Gimbal::validate_angle(f32::INFINITY, "Test").is_err());
+    }
+
+    #[test]
+    fn test_rc_value_validation() {
+        // Valid RC values
+        assert!(Storm32Gimbal::validate_rc_value(0, "Test").is_ok());
+        assert!(Storm32Gimbal::validate_rc_value(700, "Test").is_ok());
+        assert!(Storm32Gimbal::validate_rc_value(1500, "Test").is_ok());
+        assert!(Storm32Gimbal::validate_rc_value(2300, "Test").is_ok());
+
+        // Invalid RC values
+        assert!(Storm32Gimbal::validate_rc_value(699, "Test").is_err());
+        assert!(Storm32Gimbal::validate_rc_value(2301, "Test").is_err());
+        assert!(Storm32Gimbal::validate_rc_value(500, "Test").is_err());
+    }
+
+    #[test]
+    fn test_pan_mode_validation() {
+        // Valid pan modes (0-5)
+        for mode in 0..=5 {
+            assert!(Storm32Gimbal::validate_pan_mode(mode).is_ok());
+        }
+
+        // Invalid pan modes
+        assert!(Storm32Gimbal::validate_pan_mode(6).is_err());
+        assert!(Storm32Gimbal::validate_pan_mode(255).is_err());
+    }
+
+    #[test]
+    fn test_device_path_validation() {
+        // Path traversal should be rejected
+        assert!(Storm32Gimbal::validate_device_path("../etc/passwd").is_err());
+        assert!(Storm32Gimbal::validate_device_path("/dev/../etc/passwd").is_err());
+
+        // Non-existent path should be rejected
+        assert!(Storm32Gimbal::validate_device_path("/dev/nonexistent123456").is_err());
+    }
+
+    #[test]
+    fn test_message_serialization() {
+        let msg = RCMessage::new(RCCommand::GetVersion, Vec::new());
+        let serialized = msg.serialize();
+
+        // Check message structure
+        assert_eq!(serialized[0], RC_START_SIGN_IN); // Start sign
+        assert_eq!(serialized[1], 0); // Length (no payload)
+        assert_eq!(serialized[2], RCCommand::GetVersion as u8); // Command
+
+        // Should have CRC at the end (2 bytes)
+        assert_eq!(serialized.len(), 5); // start + length + command + crc(2)
+    }
+
+    #[test]
+    fn test_response_parsing_ack() {
+        // Single byte ACK
+        let result = RCMessage::parse_response(&[0x4A]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_response_parsing_invalid() {
+        // Too short (less than 3 bytes, but not single ACK)
+        assert!(RCMessage::parse_response(&[0xFB, 0x00]).is_err());
+
+        // Invalid start sign
+        assert!(RCMessage::parse_response(&[0xFF, 0x00, 0x00]).is_err());
+    }
+}
