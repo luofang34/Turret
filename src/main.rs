@@ -3,10 +3,23 @@ use clap::{Arg, Command};
 use log::{info, debug, error, LevelFilter};
 
 mod device_scanner;
-mod storm32;
+mod gimbal;
+mod protocols;
 
 use device_scanner::DeviceScanner;
-use storm32::Storm32Gimbal;
+use gimbal::GimbalDevice;
+use protocols::storm32_rc::Storm32RC;
+
+// Helper to get Storm32-specific features
+fn as_storm32(gimbal: &mut Box<dyn GimbalDevice>) -> Result<&mut Storm32RC> {
+    // We need to downcast - for now, we know it's Storm32RC since that's the only protocol
+    // In future, we'd check gimbal.protocol_name() and return error if not Storm32
+    // SAFETY: Currently only Storm32RC implements GimbalDevice
+    unsafe {
+        let ptr = gimbal.as_mut() as *mut dyn GimbalDevice as *mut Storm32RC;
+        Ok(&mut *ptr)
+    }
+}
 
 fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
     if args.len() == 1 {
@@ -179,8 +192,10 @@ fn main() -> Result<()> {
     };
 
     info!("Using device: {}", device_path);
-    let mut gimbal = Storm32Gimbal::new(&device_path)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // Auto-detect gimbal protocol
+    let mut gimbal = gimbal::detect_gimbal(&device_path)?;
+    info!("Detected protocol: {}", gimbal.protocol_name());
 
     match matches.subcommand() {
         Some(("set", sub_matches)) => {
@@ -190,24 +205,21 @@ fn main() -> Result<()> {
                 .collect();
             
             let (pitch, roll, yaw) = parse_angles(&angle_args)?;
-            
+
             info!("Setting angles: pitch={:.1}°, roll={:.1}°, yaw={:.1}°", pitch, roll, yaw);
-            gimbal.set_angles(pitch, roll, yaw).map_err(|e| anyhow::anyhow!("{}", e))?;
+            gimbal.set_attitude(pitch, roll, yaw)?;
             info!("Angles set successfully");
         }
         Some(("center", _)) => {
             info!("Centering gimbal...");
-            gimbal.set_angles(0.0, 0.0, 0.0).map_err(|e| anyhow::anyhow!("{}", e))?;
+            gimbal.center()?;
             info!("Gimbal centered");
         }
         Some(("status", _)) => {
             debug!("Getting gimbal status...");
-            gimbal.update_status().map_err(|e| anyhow::anyhow!("{}", e))?;
-            let status = gimbal.get_status();
-            println!("Current angles (PV): pitch={:.1}°, roll={:.1}°, yaw={:.1}°",
-                     status.pv.pitch, status.pv.roll, status.pv.yaw);
-            println!("Target angles (SP):  pitch={:.1}°, roll={:.1}°, yaw={:.1}°",
-                     status.sp.pitch, status.sp.roll, status.sp.yaw);
+            let attitude = gimbal.get_attitude()?;
+            println!("Current angles: pitch={:.1}°, roll={:.1}°, yaw={:.1}°",
+                     attitude.pitch, attitude.roll, attitude.yaw);
         }
         Some(("version", _)) => {
             debug!("Getting firmware version...");
@@ -218,23 +230,25 @@ fn main() -> Result<()> {
         }
         Some(("version-str", _)) => {
             debug!("Getting firmware version strings...");
-            match gimbal.get_version_string() {
+            let storm32 = as_storm32(&mut gimbal)?;
+            match storm32.get_version_string() {
                 Ok(version) => println!("{}", version),
                 Err(e) => error!("Failed to get version string: {}", e),
             }
         }
         Some(("pitch", sub_matches)) => {
             let value = *sub_matches.get_one::<u16>("value").unwrap();
+            let storm32 = as_storm32(&mut gimbal)?;
 
             if value == 0 {
                 info!("Recentering pitch axis...");
-                match gimbal.recenter_pitch() {
+                match storm32.recenter_pitch() {
                     Ok(_) => info!("Pitch axis recentered"),
                     Err(e) => error!("Failed to recenter pitch: {}", e),
                 }
             } else {
                 info!("Setting pitch to {}...", value);
-                match gimbal.set_pitch(value) {
+                match storm32.set_pitch(value) {
                     Ok(_) => info!("Pitch set successfully"),
                     Err(e) => error!("Failed to set pitch: {}", e),
                 }
@@ -242,33 +256,35 @@ fn main() -> Result<()> {
         }
         Some(("roll", sub_matches)) => {
             let value = *sub_matches.get_one::<u16>("value").unwrap();
+            let storm32 = as_storm32(&mut gimbal)?;
 
             if value == 0 {
                 info!("Recentering roll axis...");
-                match gimbal.recenter_roll() {
+                match storm32.recenter_roll() {
                     Ok(_) => info!("Roll axis recentered"),
                     Err(e) => error!("Failed to recenter roll: {}", e),
                 }
             } else {
                 info!("Setting roll to {}...", value);
-                match gimbal.set_roll(value) {
-                    Ok(_) => info!("Roll set successfully"),
+                match storm32.set_roll(value) {
+                    Ok(_) => info!("Pitch set successfully"),
                     Err(e) => error!("Failed to set roll: {}", e),
                 }
             }
         }
         Some(("yaw", sub_matches)) => {
             let value = *sub_matches.get_one::<u16>("value").unwrap();
+            let storm32 = as_storm32(&mut gimbal)?;
 
             if value == 0 {
                 info!("Recentering yaw axis...");
-                match gimbal.recenter_yaw() {
+                match storm32.recenter_yaw() {
                     Ok(_) => info!("Yaw axis recentered"),
                     Err(e) => error!("Failed to recenter yaw: {}", e),
                 }
             } else {
                 info!("Setting yaw to {}...", value);
-                match gimbal.set_yaw(value) {
+                match storm32.set_yaw(value) {
                     Ok(_) => info!("Yaw set successfully"),
                     Err(e) => error!("Failed to set yaw: {}", e),
                 }

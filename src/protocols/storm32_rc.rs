@@ -309,25 +309,45 @@ impl Storm32Gimbal {
     
     // Send RC command and read response
     fn send_rc_command(&mut self, message: &RCMessage) -> Result<Vec<u8>> {
+        // Flush input buffer to discard any stale data from previous commands
+        // This prevents leftover bytes from causing parsing errors
+        self.port.clear(serialport::ClearBuffer::Input)?;
+
         // Serialize and send message
         let data = message.serialize();
         trace!("Sending RC command: {:02X?}", data);
         self.port.write_all(&data)?;
         self.port.flush()?;
-        
+
+        // Small delay to let device process command
+        std::thread::sleep(Duration::from_millis(5));
+
         // Read response with multiple attempts and accumulated buffer
         let mut buffer = vec![0u8; 256];
         let mut total_bytes = 0;
         let max_attempts = 10;
         let mut attempts = 0;
-        
+
         while attempts < max_attempts && total_bytes < 4 {
             match self.port.read(&mut buffer[total_bytes..]) {
                 Ok(bytes_read) => {
                     if bytes_read > 0 {
                         total_bytes += bytes_read;
+
+                        // If we have at least one byte, check if it's the correct start sign
+                        if total_bytes > 0 && buffer[0] != RC_START_SIGN_OUT && buffer[0] != 0x4A {
+                            // Wrong start byte - we got garbage data
+                            // Log and clear to try again
+                            debug!("Received garbage data (wrong start byte 0x{:02X}), flushing buffer", buffer[0]);
+                            self.port.clear(serialport::ClearBuffer::Input)?;
+                            total_bytes = 0;
+                            attempts += 1;
+                            std::thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+
                         // Check if we have enough for a minimal response
-                        if total_bytes >= 4 {
+                        if total_bytes >= 4 || (total_bytes == 1 && buffer[0] == 0x4A) {
                             break;
                         }
                     } else if total_bytes > 0 {
@@ -348,11 +368,11 @@ impl Storm32Gimbal {
                 Err(e) => return Err(Storm32Error::IoError(e)),
             }
         }
-        
+
         if total_bytes == 0 {
             return Err(Storm32Error::ProtocolError("No response received".to_string()));
         }
-        
+
         trace!("Received RC response: {:02X?}", &buffer[..total_bytes]);
         RCMessage::parse_response(&buffer[..total_bytes])
     }
@@ -597,6 +617,73 @@ impl Storm32Gimbal {
     pub fn debug_send_raw(&mut self, command: RCCommand, payload: Vec<u8>) -> Result<Vec<u8>> {
         let message = RCMessage::new(command, payload);
         self.send_rc_command(&message)
+    }
+}
+
+// Implement GimbalDevice trait for Storm32Gimbal
+impl crate::gimbal::GimbalDevice for Storm32Gimbal {
+    fn protocol_name(&self) -> &'static str {
+        "STorM32 RC Commands"
+    }
+
+    fn set_attitude(&mut self, pitch: f32, roll: f32, yaw: f32) -> anyhow::Result<()> {
+        self.set_angles(pitch, roll, yaw)
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    fn get_attitude(&mut self) -> anyhow::Result<crate::gimbal::Attitude> {
+        self.update_status()
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let status = self.get_status();
+        Ok(crate::gimbal::Attitude {
+            pitch: status.pv.pitch,
+            roll: status.pv.roll,
+            yaw: status.pv.yaw,
+        })
+    }
+
+    fn set_pan_mode(&mut self, mode: u8) -> anyhow::Result<()> {
+        Storm32Gimbal::set_pan_mode(self, mode)
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    fn set_standby(&mut self, enabled: bool) -> anyhow::Result<()> {
+        Storm32Gimbal::set_standby(self, enabled)
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    fn get_version(&mut self) -> anyhow::Result<String> {
+        Storm32Gimbal::get_version(self)
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+}
+
+// Type alias for cleaner code
+pub type Storm32RC = Storm32Gimbal;
+
+impl Storm32RC {
+    /// Try to detect and initialize a STorM32 RC device on the given port
+    pub fn try_detect(device_path: &str) -> anyhow::Result<Self> {
+        // Validate and open port
+        Self::validate_device_path(device_path)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let mut gimbal = Self::new(device_path)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        // Try to get version to verify it's a STorM32 device
+        match gimbal.get_version() {
+            Ok(version) => {
+                log::info!("Detected STorM32 RC device: {}", version);
+                Ok(gimbal)
+            }
+            Err(e) => {
+                // Version command failed - might not be STorM32
+                log::debug!("STorM32 RC detection failed: {}", e);
+                Err(anyhow::anyhow!("Not a STorM32 RC device: {}", e))
+            }
+        }
     }
 }
 
