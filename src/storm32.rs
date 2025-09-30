@@ -1,9 +1,33 @@
-use anyhow::{anyhow, Result};
 use log::{debug, trace, warn};
 use serialport::SerialPort;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
+use thiserror::Error;
+
+/// Custom error types for STorM32 operations
+#[derive(Debug, Error)]
+pub enum Storm32Error {
+    #[error("Serial port error: {0}")]
+    SerialError(#[from] serialport::Error),
+
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("Invalid response: {0}")]
+    ProtocolError(String),
+
+    #[error("CRC check failed: expected valid CRC, got 0x{0:04X}")]
+    CrcError(u16),
+
+    #[error("Invalid input: {0}")]
+    ValidationError(String),
+
+    #[error("Device error: {0}")]
+    DeviceError(String),
+}
+
+pub type Result<T> = std::result::Result<T, Storm32Error>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct GimbalAngles {
@@ -182,14 +206,14 @@ impl RCMessage {
             // Common ACK values: 0x4A (74) seems to be success
             return Ok(vec![]);  // Return empty payload for ACK
         }
-        
+
         if data.len() < 3 {
-            return Err(anyhow!("Response too short: got {} bytes, need at least 3", data.len()));
+            return Err(Storm32Error::ProtocolError(format!("Response too short: got {} bytes, need at least 3", data.len())));
         }
-        
+
         // Check start sign
         if data[0] != RC_START_SIGN_OUT {
-            return Err(anyhow!("Invalid start sign: expected 0xFB, got 0x{:02X}", data[0]));
+            return Err(Storm32Error::ProtocolError(format!("Invalid start sign: expected 0xFB, got 0x{:02X}", data[0])));
         }
         
         let length = data[1] as usize;
@@ -202,7 +226,7 @@ impl RCMessage {
                 // Minimal ACK response with just command byte
                 return Ok(vec![]);  // Empty payload for ACK
             }
-            return Err(anyhow!("Incomplete message: got {} bytes, expected {}", data.len(), expected_total));
+            return Err(Storm32Error::ProtocolError(format!("Incomplete message: got {} bytes, expected {}", data.len(), expected_total)));
         }
         
         // Extract payload (skip start, length bytes only - payload includes command byte)
@@ -214,7 +238,7 @@ impl RCMessage {
             if length == 1 && data.len() >= 5 {
                 return Ok(vec![]);  // Empty payload
             }
-            return Err(anyhow!("Invalid payload length"));
+            return Err(Storm32Error::ProtocolError("Invalid payload length".to_string()));
         }
         
         let payload = if payload_end > payload_start {
@@ -233,7 +257,7 @@ impl RCMessage {
                 let crc_data = &data[1..payload_end];
 
                 if !Self::verify_crc16(crc_data, received_crc) {
-                    return Err(anyhow!("CRC verification failed: expected valid CRC, got 0x{:04X}", received_crc));
+                    return Err(Storm32Error::CrcError(received_crc));
                 }
 
                 trace!("CRC verification passed: 0x{:04X}", received_crc);
@@ -254,25 +278,24 @@ impl Storm32Gimbal {
     fn validate_device_path(device_path: &str) -> Result<()> {
         // Reject path traversal attempts
         if device_path.contains("..") {
-            return Err(anyhow!("Invalid device path: path traversal detected"));
+            return Err(Storm32Error::ValidationError("Invalid device path: path traversal detected".to_string()));
         }
 
         // Check if path exists
         let path = Path::new(device_path);
         if !path.exists() {
-            return Err(anyhow!("Device path does not exist: {}", device_path));
+            return Err(Storm32Error::DeviceError(format!("Device path does not exist: {}", device_path)));
         }
 
         // On Unix systems, verify it's a character device
         #[cfg(unix)]
         {
             use std::os::unix::fs::FileTypeExt;
-            let metadata = std::fs::metadata(path)
-                .map_err(|e| anyhow!("Cannot access device path: {}", e))?;
+            let metadata = std::fs::metadata(path)?;
             let file_type = metadata.file_type();
 
             if !file_type.is_char_device() {
-                return Err(anyhow!("Path is not a character device: {}", device_path));
+                return Err(Storm32Error::DeviceError(format!("Path is not a character device: {}", device_path)));
             }
         }
 
@@ -285,8 +308,7 @@ impl Storm32Gimbal {
 
         let port = serialport::new(device_path, 115200)
             .timeout(Duration::from_millis(1000))
-            .open()
-            .map_err(|e| anyhow!("Failed to open serial port {}: {}", device_path, e))?;
+            .open()?;
 
         let gimbal = Self {
             port,
@@ -308,10 +330,8 @@ impl Storm32Gimbal {
         // Serialize and send message
         let data = message.serialize();
         trace!("Sending RC command: {:02X?}", data);
-        self.port.write_all(&data)
-            .map_err(|e| anyhow!("Failed to write to serial port: {}", e))?;
-        self.port.flush()
-            .map_err(|e| anyhow!("Failed to flush serial port: {}", e))?;
+        self.port.write_all(&data)?;
+        self.port.flush()?;
         
         // Read response with multiple attempts and accumulated buffer
         let mut buffer = vec![0u8; 256];
@@ -343,12 +363,12 @@ impl Storm32Gimbal {
                     attempts += 1;
                     continue;
                 }
-                Err(e) => return Err(anyhow!("Failed to read response: {}", e)),
+                Err(e) => return Err(Storm32Error::IoError(e)),
             }
         }
         
         if total_bytes == 0 {
-            return Err(anyhow!("No response received"));
+            return Err(Storm32Error::ProtocolError("No response received".to_string()));
         }
         
         trace!("Received RC response: {:02X?}", &buffer[..total_bytes]);
@@ -358,10 +378,10 @@ impl Storm32Gimbal {
     // Validate angle values (typical gimbal range is -180 to +180 degrees)
     fn validate_angle(angle: f32, name: &str) -> Result<()> {
         if !angle.is_finite() {
-            return Err(anyhow!("{} must be a finite number", name));
+            return Err(Storm32Error::ValidationError(format!("{} must be a finite number", name)));
         }
         if angle < -180.0 || angle > 180.0 {
-            return Err(anyhow!("{} must be between -180° and +180° (got {:.1}°)", name, angle));
+            return Err(Storm32Error::ValidationError(format!("{} must be between -180° and +180° (got {:.1}°)", name, angle)));
         }
         Ok(())
     }
@@ -369,7 +389,7 @@ impl Storm32Gimbal {
     // Validate RC values (700-2300 or 0 for recenter)
     fn validate_rc_value(value: u16, name: &str) -> Result<()> {
         if value != 0 && (value < 700 || value > 2300) {
-            return Err(anyhow!("{} must be 0 (recenter) or 700-2300 (got {})", name, value));
+            return Err(Storm32Error::ValidationError(format!("{} must be 0 (recenter) or 700-2300 (got {})", name, value)));
         }
         Ok(())
     }
@@ -377,7 +397,7 @@ impl Storm32Gimbal {
     // Validate pan mode (0-5 only)
     fn validate_pan_mode(mode: u8) -> Result<()> {
         if mode > 5 {
-            return Err(anyhow!("Pan mode must be 0-5 (got {})", mode));
+            return Err(Storm32Error::ValidationError(format!("Pan mode must be 0-5 (got {})", mode)));
         }
         Ok(())
     }
@@ -398,7 +418,7 @@ impl Storm32Gimbal {
                 self.current_status.sp = GimbalAngles { pitch, roll, yaw };
                 Ok(())
             }
-            Err(e) => Err(anyhow!("Failed to set angles: {}", e)),
+            Err(e) => Err(e),
         }
     }
     
@@ -409,7 +429,7 @@ impl Storm32Gimbal {
         
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
-            Err(e) => Err(anyhow!("Failed to set RC angles: {}", e)),
+            Err(e) => Err(e),
         }
     }
     
@@ -422,7 +442,7 @@ impl Storm32Gimbal {
 
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
-            Err(e) => Err(anyhow!("Failed to set pitch: {}", e)),
+            Err(e) => Err(e),
         }
     }
 
@@ -435,7 +455,7 @@ impl Storm32Gimbal {
 
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
-            Err(e) => Err(anyhow!("Failed to set roll: {}", e)),
+            Err(e) => Err(e),
         }
     }
 
@@ -448,7 +468,7 @@ impl Storm32Gimbal {
 
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
-            Err(e) => Err(anyhow!("Failed to set yaw: {}", e)),
+            Err(e) => Err(e),
         }
     }
     
@@ -494,7 +514,7 @@ impl Storm32Gimbal {
     // Parse response from CMD_GETDATAFIELDS
     fn parse_data_fields_response(&mut self, response: &[u8]) -> Result<()> {
         if response.len() < 7 {
-            return Err(anyhow!("Data fields response too short: {} bytes", response.len()));
+            return Err(Storm32Error::ProtocolError(format!("Data fields response too short: {} bytes", response.len())));
         }
         
         // Response format: [command_byte, bitmask_low, bitmask_high, data...]
@@ -529,7 +549,7 @@ impl Storm32Gimbal {
 
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
-            Err(e) => Err(anyhow!("Failed to set pan mode: {}", e)),
+            Err(e) => Err(e),
         }
     }
     
@@ -541,7 +561,7 @@ impl Storm32Gimbal {
         
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
-            Err(e) => Err(anyhow!("Failed to set standby: {}", e)),
+            Err(e) => Err(e),
         }
     }
     
@@ -562,10 +582,10 @@ impl Storm32Gimbal {
                         layout_version >> 8, layout_version & 0xFF,
                         capabilities))
                 } else {
-                    Err(anyhow!("Version response too short"))
+                    Err(Storm32Error::ProtocolError("Version response too short".to_string()))
                 }
             }
-            Err(e) => Err(anyhow!("Failed to get version: {}", e)),
+            Err(e) => Err(e),
         }
     }
     
@@ -583,10 +603,10 @@ impl Storm32Gimbal {
                     
                     Ok(format!("Version: '{}', Name: '{}', Board: '{}'", version_str, name_str, board_str))
                 } else {
-                    Err(anyhow!("Version string response too short"))
+                    Err(Storm32Error::ProtocolError("Version string response too short".to_string()))
                 }
             }
-            Err(e) => Err(anyhow!("Failed to get version string: {}", e)),
+            Err(e) => Err(e),
         }
     }
     

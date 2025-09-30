@@ -179,7 +179,8 @@ fn main() -> Result<()> {
     };
 
     info!("Using device: {}", device_path);
-    let mut gimbal = Storm32Gimbal::new(&device_path)?;
+    let mut gimbal = Storm32Gimbal::new(&device_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     match matches.subcommand() {
         Some(("set", sub_matches)) => {
@@ -191,17 +192,17 @@ fn main() -> Result<()> {
             let (pitch, roll, yaw) = parse_angles(&angle_args)?;
             
             info!("Setting angles: pitch={:.1}°, roll={:.1}°, yaw={:.1}°", pitch, roll, yaw);
-            gimbal.set_angles(pitch, roll, yaw)?;
+            gimbal.set_angles(pitch, roll, yaw).map_err(|e| anyhow::anyhow!("{}", e))?;
             info!("Angles set successfully");
         }
         Some(("center", _)) => {
             info!("Centering gimbal...");
-            gimbal.set_angles(0.0, 0.0, 0.0)?;
+            gimbal.set_angles(0.0, 0.0, 0.0).map_err(|e| anyhow::anyhow!("{}", e))?;
             info!("Gimbal centered");
         }
         Some(("status", _)) => {
             debug!("Getting gimbal status...");
-            gimbal.update_status()?;
+            gimbal.update_status().map_err(|e| anyhow::anyhow!("{}", e))?;
             let status = gimbal.get_status();
             println!("Current angles (PV): pitch={:.1}°, roll={:.1}°, yaw={:.1}°",
                      status.pv.pitch, status.pv.roll, status.pv.yaw);
