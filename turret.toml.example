@@ -1,0 +1,44 @@
+# Turret Configuration File
+# Copy this to turret.toml and modify as needed
+
+[gimbal]
+# Protocol to use: "auto", "mavlink-v1", "mavlink-v2", or "storm32-rc"
+protocol = "auto"
+
+# Serial device path (leave empty for auto-detection)
+device = ""
+
+# Serial communication settings
+baud_rate = 115200
+timeout_ms = 1000
+
+# MAVLink settings (only used with mavlink-v1 and mavlink-v2 protocols)
+mavlink_system_id = 1
+mavlink_component_id = 154  # MAV_COMP_ID_GIMBAL
+
+
+[daemon]
+# Enable daemon mode
+enabled = false
+
+# Unix socket path (Linux/macOS) or named pipe (Windows)
+socket_path = "/tmp/turret.sock"
+
+# TCP port for daemon (0 to disable)
+tcp_port = 0
+
+# Heartbeat interval in milliseconds
+heartbeat_interval_ms = 1000
+
+# Maximum concurrent clients
+max_clients = 10
+
+[logging]
+# Log level: "error", "warn", "info", "debug", "trace"
+level = "info"
+
+# Enable logging to file
+file_enabled = false
+
+# Log file path
+file_path = "/tmp/turret.log"

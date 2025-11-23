@@ -1,8 +1,15 @@
+// Rust 2018+ style: module file is src/daemon.rs, submodules in src/daemon/
+#[path = "daemon/arbitrator.rs"]
 pub mod arbitrator;
+#[path = "daemon/config.rs"]
 pub mod config;
+#[path = "daemon/ipc_server.rs"]
 pub mod ipc_server;
+#[path = "daemon/mavlink_manager.rs"]
 pub mod mavlink_manager;
+#[path = "daemon/models.rs"]
 pub mod models;
+#[path = "daemon/state.rs"]
 pub mod state;
 
 use crate::device_scanner::DeviceScanner;

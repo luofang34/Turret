@@ -1,6 +1,16 @@
-use log::debug;
+use anyhow::Result;
+use log::{debug, info};
 use serialport::{SerialPortInfo, SerialPortType};
 use std::fs;
+
+use crate::protocols::{detect_protocol, ProtocolType};
+
+#[derive(Debug, Clone)]
+pub struct GimbalDevice {
+    pub path: String,
+    pub protocol: ProtocolType,
+    pub device_info: Option<SerialPortInfo>,
+}
 
 pub struct DeviceScanner;
 
@@ -8,18 +18,79 @@ impl DeviceScanner {
     pub fn new() -> Self {
         Self
     }
-    
+
+    /// Find any gimbal device (auto-detect protocol)
+    pub async fn find_gimbal_device(&self) -> Option<GimbalDevice> {
+        // First try serialport enumeration (works on all platforms)
+        if let Some(device) = self.find_via_serialport().await {
+            return Some(device);
+        }
+
+        // Fallback to system-specific methods
+        self.find_via_system_info().await
+    }
+
+    /// Find StORM32 device (legacy method for backward compatibility)
     pub fn find_storm32_device(&self) -> Option<String> {
         // First try serialport enumeration (works on all platforms)
-        if let Some(path) = self.find_via_serialport() {
+        if let Some(path) = self.find_storm32_via_serialport() {
             return Some(path);
         }
-        
+
         // Fallback to system-specific methods
-        self.find_via_system_info()
+        self.find_storm32_via_system_info()
+    }
+
+    /// Find any suitable device without protocol detection (for when protocol is explicitly specified)
+    pub fn find_any_suitable_device(&self) -> Option<String> {
+        match serialport::available_ports() {
+            Ok(ports) => {
+                for port in ports {
+                    if self.is_potential_gimbal_device(&port) {
+                        info!("Found potential device: {}", port.port_name);
+                        return Some(port.port_name);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Error enumerating serial ports: {}", e);
+            }
+        }
+        None
     }
     
-    fn find_via_serialport(&self) -> Option<String> {
+    async fn find_via_serialport(&self) -> Option<GimbalDevice> {
+        match serialport::available_ports() {
+            Ok(ports) => {
+                for port in &ports {
+                    if self.is_potential_gimbal_device(port) {
+                        info!("Testing potential gimbal device: {}", port.port_name);
+
+                        // Try to detect protocol
+                        match detect_protocol(&port.port_name).await {
+                            Ok(protocol) => {
+                                info!("Detected protocol {} on {}", protocol, port.port_name);
+                                return Some(GimbalDevice {
+                                    path: port.port_name.clone(),
+                                    protocol,
+                                    device_info: Some(port.clone()),
+                                });
+                            }
+                            Err(e) => {
+                                debug!("Protocol detection failed for {}: {}", port.port_name, e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Error enumerating serial ports: {}", e);
+            }
+        }
+        None
+    }
+
+    fn find_storm32_via_serialport(&self) -> Option<String> {
         match serialport::available_ports() {
             Ok(ports) => {
                 for port in ports {
@@ -35,6 +106,50 @@ impl DeviceScanner {
         None
     }
     
+    /// Check if a port might be a gimbal device (broader check)
+    fn is_potential_gimbal_device(&self, port_info: &SerialPortInfo) -> bool {
+        match &port_info.port_type {
+            SerialPortType::UsbPort(usb_info) => {
+                // Check for common gimbal/drone controller vendors
+                // STMicroelectronics (StORM32 and others)
+                if usb_info.vid == 1155 {
+                    return true;
+                }
+                // FTDI (many drone controllers use FTDI chips)
+                if usb_info.vid == 1027 {
+                    return true;
+                }
+                // Silicon Labs (CP210x series, common in drone hardware)
+                if usb_info.vid == 4292 {
+                    return true;
+                }
+                // Prolific (PL2303 series)
+                if usb_info.vid == 1659 {
+                    return true;
+                }
+                // Other common vendors that might make gimbal controllers
+                false
+            }
+            SerialPortType::BluetoothPort => false,
+            SerialPortType::PciPort => false,
+            SerialPortType::Unknown => {
+                // For unknown port types, we might still want to try them
+                // if they match common naming patterns
+                self.matches_gimbal_device_pattern(&port_info.port_name)
+            }
+        }
+    }
+
+    /// Check if device name matches common gimbal device patterns
+    fn matches_gimbal_device_pattern(&self, port_name: &str) -> bool {
+        let port_lower = port_name.to_lowercase();
+        // Common patterns for serial devices that might be gimbals
+        port_lower.contains("ttyacm") ||
+        port_lower.contains("ttyusb") ||
+        port_lower.contains("usbmodem") ||
+        port_lower.starts_with("com")
+    }
+
     fn is_storm32_device(&self, port_info: &SerialPortInfo) -> bool {
         match &port_info.port_type {
             SerialPortType::UsbPort(usb_info) => {
@@ -49,10 +164,34 @@ impl DeviceScanner {
     }
     
     #[cfg(target_os = "macos")]
-    fn find_via_system_info(&self) -> Option<String> {
+    async fn find_via_system_info(&self) -> Option<GimbalDevice> {
+        let patterns = ["/dev/tty.usbmodem*", "/dev/tty.SLAB_USBtoUART*"];
+
+        for pattern in &patterns {
+            if let Ok(devices) = self.glob_devices(pattern) {
+                for device in devices {
+                    if self.test_device_exists(&device) {
+                        // Try to detect protocol
+                        if let Ok(protocol) = detect_protocol(&device).await {
+                            return Some(GimbalDevice {
+                                path: device,
+                                protocol,
+                                device_info: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    fn find_storm32_via_system_info(&self) -> Option<String> {
         // Look for tty devices that match STM32 patterns
         let patterns = ["/dev/tty.usbmodem*"];
-        
+
         for pattern in &patterns {
             if let Ok(devices) = self.glob_devices(pattern) {
                 for device in devices {
@@ -62,20 +201,44 @@ impl DeviceScanner {
                 }
             }
         }
-        
+
         // Fallback: try any USB modem device
         if let Ok(devices) = self.glob_devices("/dev/tty.usbmodem*") {
             return devices.into_iter().next();
         }
-        
+
         None
     }
     
     #[cfg(target_os = "linux")]
-    fn find_via_system_info(&self) -> Option<String> {
+    async fn find_via_system_info(&self) -> Option<GimbalDevice> {
+        let patterns = ["/dev/ttyACM*", "/dev/ttyUSB*"];
+
+        for pattern in &patterns {
+            if let Ok(devices) = self.glob_devices(pattern) {
+                for device in devices {
+                    if self.test_device_exists(&device) {
+                        // Try to detect protocol
+                        if let Ok(protocol) = detect_protocol(&device).await {
+                            return Some(GimbalDevice {
+                                path: device,
+                                protocol,
+                                device_info: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn find_storm32_via_system_info(&self) -> Option<String> {
         // Check common Linux serial device patterns
         let patterns = ["/dev/ttyACM*", "/dev/ttyUSB*"];
-        
+
         for pattern in &patterns {
             if let Ok(devices) = self.glob_devices(pattern) {
                 for device in devices {
@@ -85,7 +248,7 @@ impl DeviceScanner {
                 }
             }
         }
-        
+
         // Fallback: return first available device
         for pattern in &patterns {
             if let Ok(devices) = self.glob_devices(pattern) {
@@ -94,12 +257,31 @@ impl DeviceScanner {
                 }
             }
         }
-        
+
         None
     }
     
     #[cfg(target_os = "windows")]
-    fn find_via_system_info(&self) -> Option<String> {
+    async fn find_via_system_info(&self) -> Option<GimbalDevice> {
+        // On Windows, try common COM ports
+        for i in 1..=20 {
+            let port_name = format!("COM{}", i);
+            if self.test_device_exists(&port_name) {
+                // Try to detect protocol
+                if let Ok(protocol) = detect_protocol(&port_name).await {
+                    return Some(GimbalDevice {
+                        path: port_name,
+                        protocol,
+                        device_info: None,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "windows")]
+    fn find_storm32_via_system_info(&self) -> Option<String> {
         // On Windows, rely primarily on serialport enumeration
         // This is a fallback that checks common COM ports
         for i in 1..=20 {
@@ -112,7 +294,13 @@ impl DeviceScanner {
     }
     
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    fn find_via_system_info(&self) -> Option<String> {
+    async fn find_via_system_info(&self) -> Option<GimbalDevice> {
+        // Fallback for other platforms
+        None
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    fn find_storm32_via_system_info(&self) -> Option<String> {
         // Fallback for other platforms
         None
     }

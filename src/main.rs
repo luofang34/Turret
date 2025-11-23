@@ -13,54 +13,41 @@ use protocols::storm32_rc::Storm32RC;
 
 // Helper to get Storm32-specific features
 fn as_storm32(gimbal: &mut Box<dyn GimbalDevice>) -> Result<&mut Storm32RC> {
-    // We need to downcast - for now, we know it's Storm32RC since that's the only protocol
-    // In future, we'd check gimbal.protocol_name() and return error if not Storm32
-    // SAFETY: Currently only Storm32RC implements GimbalDevice
-    unsafe {
-        let ptr = gimbal.as_mut() as *mut dyn GimbalDevice as *mut Storm32RC;
-        Ok(&mut *ptr)
-    }
+    let protocol_name = gimbal.protocol_name().to_string();
+    gimbal.as_any_mut()
+        .downcast_mut::<Storm32RC>()
+        .ok_or_else(|| anyhow!("Gimbal is not a Storm32RC device. Protocol: {}", protocol_name))
 }
 
 fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
     if args.len() == 1 {
         let input = &args[0];
-        
-        // Try comma-separated format: x,y,z
-        if input.contains(',') {
-            let parts: Vec<&str> = input.split(',').collect();
-            if parts.len() != 3 {
-                return Err(anyhow!("Comma format must contain exactly 3 values: pitch,roll,yaw (got {})", parts.len()));
-            }
-            
-            let pitch = parts[0].trim().parse::<f32>()
-                .map_err(|_| anyhow!("Invalid pitch value: '{}'", parts[0]))?;
-            let roll = parts[1].trim().parse::<f32>()
-                .map_err(|_| anyhow!("Invalid roll value: '{}'", parts[1]))?;
-            let yaw = parts[2].trim().parse::<f32>()
-                .map_err(|_| anyhow!("Invalid yaw value: '{}'", parts[2]))?;
-            
-            return Ok((pitch, roll, yaw));
+
+        // Determine separator and parse
+        let separator = if input.contains(',') {
+            ','
+        } else if input.contains(':') {
+            ':'
+        } else {
+            return Err(anyhow!("Invalid single argument format. Use: pitch,roll,yaw or pitch:roll:yaw"));
+        };
+
+        let parts: Vec<&str> = input.split(separator).collect();
+        if parts.len() != 3 {
+            return Err(anyhow!(
+                "Format must contain exactly 3 values: pitch{}roll{}yaw (got {})",
+                separator, separator, parts.len()
+            ));
         }
-        
-        // Try colon-separated format: x:y:z
-        if input.contains(':') {
-            let parts: Vec<&str> = input.split(':').collect();
-            if parts.len() != 3 {
-                return Err(anyhow!("Colon format must contain exactly 3 values: pitch:roll:yaw (got {})", parts.len()));
-            }
-            
-            let pitch = parts[0].trim().parse::<f32>()
-                .map_err(|_| anyhow!("Invalid pitch value: '{}'", parts[0]))?;
-            let roll = parts[1].trim().parse::<f32>()
-                .map_err(|_| anyhow!("Invalid roll value: '{}'", parts[1]))?;
-            let yaw = parts[2].trim().parse::<f32>()
-                .map_err(|_| anyhow!("Invalid yaw value: '{}'", parts[2]))?;
-            
-            return Ok((pitch, roll, yaw));
-        }
-        
-        Err(anyhow!("Invalid single argument format. Use: pitch,roll,yaw or pitch:roll:yaw"))
+
+        let pitch = parts[0].trim().parse::<f32>()
+            .map_err(|_| anyhow!("Invalid pitch value: '{}'", parts[0]))?;
+        let roll = parts[1].trim().parse::<f32>()
+            .map_err(|_| anyhow!("Invalid roll value: '{}'", parts[1]))?;
+        let yaw = parts[2].trim().parse::<f32>()
+            .map_err(|_| anyhow!("Invalid yaw value: '{}'", parts[2]))?;
+
+        Ok((pitch, roll, yaw))
     } else if args.len() == 3 {
         // Three separate arguments
         let pitch = args[0].parse::<f32>()
@@ -69,7 +56,7 @@ fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
             .map_err(|_| anyhow!("Invalid roll value: '{}'", args[1]))?;
         let yaw = args[2].parse::<f32>()
             .map_err(|_| anyhow!("Invalid yaw value: '{}'", args[2]))?;
-        
+
         Ok((pitch, roll, yaw))
     } else {
         Err(anyhow!("Invalid arguments. Use: 'pitch roll yaw', 'pitch,roll,yaw', or 'pitch:roll:yaw'"))
@@ -79,7 +66,7 @@ fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let matches = Command::new("turret")
-        .version("0.1.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .about("STorM32 Gimbal Control using RC Commands")
         .arg(Arg::new("device").short('d').long("device").help("Serial device path (auto-detects if not specified)").value_name("DEVICE"))
         .arg(Arg::new("verbose").short('v').long("verbose")
@@ -285,7 +272,7 @@ async fn main() -> Result<()> {
             } else {
                 info!("Setting roll to {}...", value);
                 match storm32.set_roll(value) {
-                    Ok(_) => info!("Pitch set successfully"),
+                    Ok(_) => info!("Roll set successfully"),
                     Err(e) => error!("Failed to set roll: {}", e),
                 }
             }

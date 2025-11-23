@@ -38,6 +38,16 @@ pub trait GimbalDevice: Send {
     fn get_version(&mut self) -> Result<String> {
         Err(anyhow::anyhow!("Version query not supported by {} protocol", self.protocol_name()))
     }
+
+    /// Downcast to Any for type-specific access
+    fn as_any(&self) -> &dyn std::any::Any {
+        panic!("as_any not implemented for {}", self.protocol_name())
+    }
+
+    /// Downcast to Any mutable for type-specific access
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        panic!("as_any_mut not implemented for {}", self.protocol_name())
+    }
 }
 
 /// Detect and initialize gimbal device on given serial port

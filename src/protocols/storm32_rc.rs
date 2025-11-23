@@ -657,6 +657,14 @@ impl crate::gimbal::GimbalDevice for Storm32Gimbal {
         Storm32Gimbal::get_version(self)
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 // Type alias for cleaner code
