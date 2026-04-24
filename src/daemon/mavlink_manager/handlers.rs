@@ -5,9 +5,9 @@
 //! parsed into a `MavMessage` or during the periodic broadcast loops. The
 //! parent module owns the socket / task lifecycle; this one is frame logic.
 
-use super::math::{quaternion_wxyz_to_euler_deg, to_id_byte};
+use super::math::{clamp_axis, quaternion_wxyz_to_euler_deg, to_id_byte};
 use super::{Peers, RxCtx};
-use crate::daemon::config::MavlinkConfig;
+use crate::daemon::config::{GimbalLimits, MavlinkConfig};
 use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
 use crate::daemon::state::StateManager;
 use log::{debug, error, info, warn};
@@ -164,15 +164,18 @@ async fn on_set_attitude(
         return;
     }
 
-    // TODO(item-6): honor frame flags (YAW_IN_VEHICLE_FRAME vs
-    // YAW_IN_EARTH_FRAME) and RETRACT / NEUTRAL shortcuts.
+    // TODO: honor frame flags (YAW_IN_VEHICLE_FRAME vs YAW_IN_EARTH_FRAME)
+    // and RETRACT / NEUTRAL shortcuts. Earth-frame yaw needs vehicle
+    // attitude integration, which depends on AUTOPILOT_STATE_FOR_GIMBAL_DEVICE
+    // ingestion that isn't wired up yet.
     let (pitch_deg, roll_deg, yaw_deg) = quaternion_wxyz_to_euler_deg(m.q);
+    let (pitch, roll, yaw) = clamp_pry(pitch_deg, roll_deg, yaw_deg, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
         CommandMode::Position,
-        Some(yaw_deg),
-        Some(pitch_deg),
-        Some(roll_deg),
+        Some(yaw),
+        Some(pitch),
+        Some(roll),
     );
     dispatch_gimbal_command(command, ctx, "SET_ATTITUDE").await;
 }
@@ -197,11 +200,12 @@ async fn on_set_pitchyaw(
 
     let pitch_deg = m.pitch.to_degrees();
     let yaw_deg = m.yaw.to_degrees();
+    let (pitch, _roll, yaw) = clamp_pry(pitch_deg, 0.0, yaw_deg, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
         CommandMode::Position,
-        Some(yaw_deg),
-        Some(pitch_deg),
+        Some(yaw),
+        Some(pitch),
         Some(0.0),
     );
     dispatch_gimbal_command(command, ctx, "SET_PITCHYAW").await;
@@ -225,14 +229,17 @@ async fn on_set_manual(
         return;
     }
 
-    // Manual control uses normalized values (-1.0..=1.0). Scale to ±90°.
+    // Manual control uses normalized values (-1.0..=1.0). Scale to ±90°
+    // then clamp to the configured device limits in case those are
+    // tighter than ±90°.
     let pitch_deg = m.pitch * 90.0;
     let yaw_deg = m.yaw * 90.0;
+    let (pitch, _roll, yaw) = clamp_pry(pitch_deg, 0.0, yaw_deg, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
         CommandMode::Manual,
-        Some(yaw_deg),
-        Some(pitch_deg),
+        Some(yaw),
+        Some(pitch),
         Some(0.0),
     );
     dispatch_gimbal_command(command, ctx, "SET_MANUAL_CONTROL").await;
@@ -284,8 +291,9 @@ async fn on_cmd_pitchyaw(
     // param1 = pitch (deg), param2 = yaw (deg). param3/4 are rates and
     // ignored until a rate-control path lands. NaN means "leave axis
     // unchanged" per spec — substitute 0.0 for now.
-    let pitch = if cmd.param1.is_nan() { 0.0 } else { cmd.param1 };
-    let yaw = if cmd.param2.is_nan() { 0.0 } else { cmd.param2 };
+    let pitch_in = if cmd.param1.is_nan() { 0.0 } else { cmd.param1 };
+    let yaw_in = if cmd.param2.is_nan() { 0.0 } else { cmd.param2 };
+    let (pitch, _roll, yaw) = clamp_pry(pitch_in, 0.0, yaw_in, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
         CommandMode::Position,
@@ -345,6 +353,18 @@ async fn on_cmd_configure(src_addr: SocketAddr, cmd: COMMAND_LONG_DATA, ctx: &Rx
     .await;
 }
 
+/// Clamp `(pitch, roll, yaw)` to the configured device limits and log
+/// per-axis if a clamp actually occurred. The order of the returned tuple
+/// matches the input order, not the order arguments appear in
+/// `GimbalCommand::new`.
+fn clamp_pry(pitch: f32, roll: f32, yaw: f32, limits: &GimbalLimits) -> (f32, f32, f32) {
+    (
+        clamp_axis(pitch, limits.pitch_min_deg, limits.pitch_max_deg, "pitch"),
+        clamp_axis(roll, limits.roll_min_deg, limits.roll_max_deg, "roll"),
+        clamp_axis(yaw, limits.yaw_min_deg, limits.yaw_max_deg, "yaw"),
+    )
+}
+
 /// Common tail for SET_* handlers: execute through the arbitrator and log.
 async fn dispatch_gimbal_command(command: GimbalCommand, ctx: &RxCtx<'_>, label: &str) {
     let mut gimbal_guard = ctx.gimbal.lock().await;
@@ -365,16 +385,39 @@ async fn send_gimbal_manager_information(
     config: &MavlinkConfig,
     seq: &Arc<AtomicU8>,
 ) {
+    use mavlink::ardupilotmega::GimbalManagerCapFlags as Caps;
+
+    // Capabilities the Storm32-backed manager actually has. We advertise
+    // all three axes (Storm32 is a 3-axis gimbal), follow / lock per axis
+    // (covered by SetPanMode 0..=5), retract via SetStandby, neutral via
+    // recenter_*, and RC-style inputs (the protocol's native command set).
+    // We do NOT advertise infinite-yaw, earth-frame yaw, or point-at-location:
+    // earth-frame yaw needs vehicle attitude integration we don't have, and
+    // point-at-location needs GPS / coordinate-frame plumbing.
+    let cap_flags = Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_RETRACT
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_NEUTRAL
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_ROLL_AXIS
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_ROLL_FOLLOW
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_ROLL_LOCK
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_PITCH_AXIS
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_PITCH_FOLLOW
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_PITCH_LOCK
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_YAW_AXIS
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_YAW_FOLLOW
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_YAW_LOCK
+        | Caps::GIMBAL_MANAGER_CAP_FLAGS_HAS_RC_INPUTS;
+
+    let limits = &config.limits;
     let info = mavlink::ardupilotmega::GIMBAL_MANAGER_INFORMATION_DATA {
-        time_boot_ms: 0, // TODO(item-6): track uptime
-        cap_flags: mavlink::ardupilotmega::GimbalManagerCapFlags::default(),
+        time_boot_ms: 0, // TODO: track uptime; needs start_time threaded here.
+        cap_flags,
         gimbal_device_id: config.compid,
-        roll_min: -180.0_f32.to_radians(),
-        roll_max: 180.0_f32.to_radians(),
-        pitch_min: -90.0_f32.to_radians(),
-        pitch_max: 90.0_f32.to_radians(),
-        yaw_min: -180.0_f32.to_radians(),
-        yaw_max: 180.0_f32.to_radians(),
+        roll_min: limits.roll_min_deg.to_radians(),
+        roll_max: limits.roll_max_deg.to_radians(),
+        pitch_min: limits.pitch_min_deg.to_radians(),
+        pitch_max: limits.pitch_max_deg.to_radians(),
+        yaw_min: limits.yaw_min_deg.to_radians(),
+        yaw_max: limits.yaw_max_deg.to_radians(),
     };
 
     let msg = MavMessage::GIMBAL_MANAGER_INFORMATION(info);

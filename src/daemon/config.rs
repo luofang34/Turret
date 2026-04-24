@@ -36,6 +36,44 @@ pub struct MavlinkConfig {
     pub sysid: u8,
     /// MAVLink component ID (154 = MAV_COMP_ID_GIMBAL)
     pub compid: u8,
+    /// Gimbal device limits advertised in GIMBAL_MANAGER_INFORMATION and
+    /// enforced (by clamping) on every inbound command.
+    #[serde(default)]
+    pub limits: GimbalLimits,
+}
+
+/// Hardware angular range advertised by the gimbal manager (degrees).
+///
+/// Used to populate `GIMBAL_MANAGER_INFORMATION` and to clamp inbound
+/// commands so a buggy GCS can't drive the gimbal past what the
+/// hardware can actually achieve.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct GimbalLimits {
+    /// Minimum pitch (degrees). Default: -90.
+    pub pitch_min_deg: f32,
+    /// Maximum pitch (degrees). Default: 90.
+    pub pitch_max_deg: f32,
+    /// Minimum roll (degrees). Default: -180.
+    pub roll_min_deg: f32,
+    /// Maximum roll (degrees). Default: 180.
+    pub roll_max_deg: f32,
+    /// Minimum yaw (degrees). Default: -180.
+    pub yaw_min_deg: f32,
+    /// Maximum yaw (degrees). Default: 180.
+    pub yaw_max_deg: f32,
+}
+
+impl Default for GimbalLimits {
+    fn default() -> Self {
+        Self {
+            pitch_min_deg: -90.0,
+            pitch_max_deg: 90.0,
+            roll_min_deg: -180.0,
+            roll_max_deg: 180.0,
+            yaw_min_deg: -180.0,
+            yaw_max_deg: 180.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +98,7 @@ impl Default for DaemonConfig {
                 serial_device: None,
                 sysid: 1,
                 compid: 154, // MAV_COMP_ID_GIMBAL
+                limits: GimbalLimits::default(),
             },
             logging: LoggingConfig {
                 level: "info".to_string(),
