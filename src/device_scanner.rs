@@ -1,4 +1,3 @@
-use anyhow::Result;
 use log::{debug, info};
 use serialport::{SerialPortInfo, SerialPortType};
 use std::fs;

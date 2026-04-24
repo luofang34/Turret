@@ -26,6 +26,7 @@
 //! internally; that will be migrated in a follow-up.
 
 #![forbid(unsafe_code)]
+#![deny(clippy::disallowed_types)]
 
 pub mod daemon;
 pub mod device_scanner;

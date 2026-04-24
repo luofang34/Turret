@@ -19,7 +19,7 @@ impl Arbitrator {
         &self,
         command: GimbalCommand,
         gimbal: &mut Box<dyn GimbalDevice>,
-    ) -> anyhow::Result<bool> {
+    ) -> crate::error::Result<bool> {
         // Try to set command (checks priority)
         if !self.state_manager.set_command(command.clone()) {
             debug!(

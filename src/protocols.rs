@@ -1,7 +1,8 @@
-use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use crate::error::Result;
 
 // Rust 2018+ style: module file is src/protocols.rs, submodules in src/protocols/
 #[path = "protocols/storm32_rc.rs"]
@@ -130,12 +131,12 @@ pub trait GimbalProtocol: Send {
     }
 }
 
-/// Auto-detect protocol on a given device
+/// Auto-detect protocol on a given device.
+///
+/// Prefer [`crate::detect_gimbal`] for most use cases; this helper only
+/// returns the protocol tag, not a usable device handle.
 pub async fn detect_protocol(device_path: &str) -> Result<ProtocolType> {
-    use log::debug;
-
-    // Try Storm32 RC protocol
-    debug!(
+    log::debug!(
         "Attempting STorM32 RC protocol detection on {}",
         device_path
     );
@@ -143,26 +144,8 @@ pub async fn detect_protocol(device_path: &str) -> Result<ProtocolType> {
         return Ok(ProtocolType::Storm32Rc);
     }
 
-    Err(anyhow::anyhow!(
-        "No supported protocol detected on {}",
-        device_path
-    ))
+    Err(crate::error::Error::NotDetected {
+        device: device_path.to_string(),
+        tried: "STorM32 RC".to_string(),
+    })
 }
-
-/// Create a protocol instance based on type
-/// Note: This function is intended for use by the daemon module
-/// For CLI usage, use the gimbal::detect_gimbal function instead
-pub async fn create_protocol(
-    _protocol_type: ProtocolType,
-    _params: ConnectionParams,
-) -> Result<Box<dyn GimbalProtocol>> {
-    // TODO: Implement this when daemon module is fully integrated
-    // For now, this is a placeholder
-    Err(anyhow::anyhow!(
-        "Protocol creation not yet implemented. Use gimbal::detect_gimbal() for CLI mode"
-    ))
-}
-
-// Note: Storm32RcAsync wrapper is not included here to avoid Sync issues
-// For async gimbal protocol implementations, see the daemon module
-// which properly wraps synchronous protocols with spawn_blocking

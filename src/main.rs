@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_types)]
+
 use anyhow::{anyhow, Result};
 use clap::{Arg, Command};
 use log::{debug, error, info, LevelFilter};
@@ -180,7 +182,8 @@ async fn main() -> Result<()> {
     if matches.get_flag("daemon") {
         info!("Starting in daemon mode...");
         let config_path = matches.get_one::<String>("config").map(|s| s.to_string());
-        return daemon::run_daemon(config_path).await;
+        daemon::run_daemon(config_path).await?;
+        return Ok(());
     }
 
     // Determine device path

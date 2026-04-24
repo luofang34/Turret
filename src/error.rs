@@ -1,8 +1,7 @@
 //! Library-boundary error type.
 //!
-//! Public API functions return `Result<T, Error>`. Internal modules may still
-//! use `anyhow` (e.g. the daemon wiring); conversions at the boundary funnel
-//! into `Error` variants here.
+//! Every public function returns `Result<T, Error>`. Internal `?`
+//! conversions funnel through the `#[from]` chains below.
 
 use thiserror::Error as ThisError;
 
@@ -23,6 +22,18 @@ pub enum Error {
     /// Underlying I/O failure.
     #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
+
+    /// YAML configuration parse / serialization failure.
+    #[error("config: {0}")]
+    Config(#[from] serde_yaml::Error),
+
+    /// JSON serialization / parse failure (IPC wire format).
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
+
+    /// MAVLink frame write failure.
+    #[error("mavlink write: {0}")]
+    MavlinkWrite(#[from] mavlink::error::MessageWriteError),
 
     /// No supported gimbal protocol was detected on the given device path.
     #[error("no supported gimbal protocol detected on {device}: tried {tried}")]
@@ -45,6 +56,10 @@ pub enum Error {
     /// Caller passed an argument that failed validation.
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    /// Daemon startup / wiring failure (socket bind, MAVLink link setup, etc.).
+    #[error("daemon: {0}")]
+    Daemon(String),
 }
 
 /// Convenience alias for `Result<T, Error>`.
