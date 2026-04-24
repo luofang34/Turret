@@ -65,6 +65,37 @@ pub enum CommandMode {
     Manual,   // Direct stick-like inputs (-1.0 to +1.0)
 }
 
+/// MAVLink primary / secondary control ownership.
+///
+/// Set via `MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE` (param1..param4) and
+/// re-broadcast in every `GIMBAL_MANAGER_STATUS`. A value of `0` means
+/// "unset" — when primary is unset, commands from any sysid/compid are
+/// accepted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrimaryControl {
+    /// Primary controller system ID (0 = unset).
+    pub primary_sysid: u8,
+    /// Primary controller component ID (0 = unset).
+    pub primary_compid: u8,
+    /// Secondary controller system ID (0 = unset).
+    pub secondary_sysid: u8,
+    /// Secondary controller component ID (0 = unset).
+    pub secondary_compid: u8,
+}
+
+impl PrimaryControl {
+    /// True if `(sysid, compid)` is allowed to drive the gimbal.
+    ///
+    /// If primary is unset (both zero), everyone is allowed. Otherwise only
+    /// an exact match is accepted.
+    pub fn is_allowed(&self, sysid: u8, compid: u8) -> bool {
+        if self.primary_sysid == 0 && self.primary_compid == 0 {
+            return true;
+        }
+        self.primary_sysid == sysid && self.primary_compid == compid
+    }
+}
+
 /// Gimbal command with source and timestamp
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GimbalCommand {
