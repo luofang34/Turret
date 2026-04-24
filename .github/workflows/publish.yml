@@ -1,0 +1,83 @@
+name: Publish
+
+# Label runs so dry-runs are visually distinct from real publishes in the
+# Actions UI. `inputs.*` is only defined for workflow_dispatch, so the push
+# branch evaluates the format() call with ref_name (e.g. "v0.1.6").
+run-name: >-
+  ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+      && 'Publish — DRY RUN'
+      || format('Publish {0}', github.ref_name) }}
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run only (cargo publish --dry-run, no upload)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: >-
+      ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+          && 'Dry-run to crates.io'
+          || 'Publish to crates.io' }}
+    runs-on: ubuntu-latest
+    # Must match the environment configured on crates.io under
+    # Settings → Trusted Publishing for this crate. Gate reviewers /
+    # secrets / approval rules on GitHub against this environment.
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/turret
+    permissions:
+      # Required for OIDC token exchange with crates.io trusted publishing.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Fail fast if someone pushed a v1.2.3 tag that doesn't match the
+      # version in Cargo.toml — cargo publish would reject it anyway, but
+      # better to surface the mismatch before the OIDC exchange.
+      - name: Verify tag matches Cargo.toml version
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          MANIFEST_VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "turret") | .version')
+          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME (=> $TAG_VERSION) does not match Cargo.toml version $MANIFEST_VERSION"
+            exit 1
+          fi
+
+      - name: Cargo package
+        run: cargo package --locked
+
+      # Always run OIDC — the point of a dry-run is to catch trusted-publisher
+      # misconfiguration (wrong environment name, publisher not registered on
+      # crates.io, protected-tag rules) before cutting a real tag. Packaging
+      # errors are cheap to catch locally; OIDC misconfig is not.
+      - name: Authenticate to crates.io (OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Dry-run publish
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked --dry-run
+
+      - name: Publish to crates.io
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked
