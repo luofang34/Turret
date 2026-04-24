@@ -24,14 +24,17 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     /// YAML configuration parse / serialization failure.
+    #[cfg(feature = "daemon")]
     #[error("config: {0}")]
     Config(#[from] serde_yaml::Error),
 
     /// JSON serialization / parse failure (IPC wire format).
+    #[cfg(feature = "daemon")]
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 
     /// MAVLink frame write failure.
+    #[cfg(feature = "daemon")]
     #[error("mavlink write: {0}")]
     MavlinkWrite(#[from] mavlink::error::MessageWriteError),
 

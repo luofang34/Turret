@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gate: [fmt, clippy, test, doc, release-build]
+        gate: [fmt, clippy, test, doc, release-build, lib-no-default]
     steps:
       - uses: actions/checkout@v6
 
@@ -60,3 +60,14 @@ jobs:
       - name: release build
         if: matrix.gate == 'release-build'
         run: cargo build --locked --release
+
+      # Library-only build with default features off — proves a downstream
+      # consumer that wants just the Storm32 driver can `cargo add turret`
+      # with `default-features = false` and skip the daemon / CLI deps.
+      - name: lib-no-default (clippy + doc)
+        if: matrix.gate == 'lib-no-default'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo clippy --locked --no-default-features --lib -- -D warnings
+          cargo doc --locked --no-default-features --no-deps

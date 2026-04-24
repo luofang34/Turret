@@ -20,10 +20,17 @@
 //! - [`Attitude`] — Euler angles returned by the device.
 //! - [`Error`] / [`Result`] — typed errors at the library boundary.
 //!
-//! Lower-level modules ([`protocols`], [`daemon`], [`device_scanner`]) are
-//! exposed for advanced integration but do not yet guarantee a stable API
-//! surface. In particular, `daemon` currently returns `anyhow::Result`
-//! internally; that will be migrated in a follow-up.
+//! Lower-level modules ([`protocols`] and [`device_scanner`]) are exposed
+//! for advanced integration but do not yet guarantee a stable API surface.
+//!
+//! # Cargo features
+//!
+//! - **`daemon`** (default) — pulls in tokio, the IPC server, the MAVLink
+//!   Gimbal Manager, and the `daemon` module. Disable with
+//!   `default-features = false` to use this crate as a lean Storm32 driver
+//!   (just `serialport`, `thiserror`, `log`, and `serde`).
+//! - **`cli`** (default) — pulls in clap / env_logger / anyhow for the
+//!   `turret` binary. The bin target requires both `cli` and `daemon`.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::disallowed_types)]
@@ -37,6 +44,7 @@
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::let_underscore_future)]
 
+#[cfg(feature = "daemon")]
 pub mod daemon;
 pub mod device_scanner;
 pub mod error;
