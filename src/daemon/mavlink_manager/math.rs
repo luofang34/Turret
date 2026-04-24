@@ -1,5 +1,24 @@
 //! Stateless math helpers for the MAVLink manager.
 
+use log::warn;
+
+/// Clamp `value` to `[min, max]` and warn the operator if the original
+/// value was outside the range. `NaN` is left unchanged so that NaN-as-
+/// "leave-axis-alone" still propagates to the caller.
+pub(super) fn clamp_axis(value: f32, min: f32, max: f32, axis: &str) -> f32 {
+    if value.is_nan() {
+        return value;
+    }
+    let clamped = value.clamp(min, max);
+    if (clamped - value).abs() > f32::EPSILON {
+        warn!(
+            "Clamping {} from {:.2}° to {:.2}° (limits {:.2}°..={:.2}°)",
+            axis, value, clamped, min, max
+        );
+    }
+    clamped
+}
+
 /// Convert a MAVLink quaternion `[w, x, y, z]` to aerospace Euler angles
 /// (roll about X, pitch about Y, yaw about Z) in degrees.
 ///
@@ -129,6 +148,24 @@ mod tests {
             "pitch: got {}, want ~90",
             pitch
         );
+    }
+
+    #[test]
+    fn clamp_axis_passes_in_range_value() {
+        assert_eq!(clamp_axis(45.0, -90.0, 90.0, "pitch"), 45.0);
+        assert_eq!(clamp_axis(-89.999, -90.0, 90.0, "pitch"), -89.999);
+        assert_eq!(clamp_axis(0.0, -90.0, 90.0, "pitch"), 0.0);
+    }
+
+    #[test]
+    fn clamp_axis_clamps_out_of_range() {
+        assert_eq!(clamp_axis(120.0, -90.0, 90.0, "pitch"), 90.0);
+        assert_eq!(clamp_axis(-200.0, -180.0, 180.0, "yaw"), -180.0);
+    }
+
+    #[test]
+    fn clamp_axis_passes_nan_through() {
+        assert!(clamp_axis(f32::NAN, -90.0, 90.0, "pitch").is_nan());
     }
 
     #[test]
