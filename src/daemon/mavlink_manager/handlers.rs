@@ -5,6 +5,7 @@
 //! parsed into a `MavMessage` or during the periodic broadcast loops. The
 //! parent module owns the socket / task lifecycle; this one is frame logic.
 
+use super::math::{quaternion_wxyz_to_euler_deg, to_id_byte};
 use super::{Peers, RxCtx};
 use crate::daemon::config::MavlinkConfig;
 use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
@@ -156,13 +157,22 @@ async fn on_set_attitude(
         return;
     }
 
-    // TODO(item-6): convert quaternion to Euler and honor frame flags.
+    // NaN in q means "ignore quaternion, use angular_velocity instead" per
+    // spec. Rate control isn't implemented yet, so just drop the command.
+    if m.q.iter().any(|c| c.is_nan()) {
+        debug!("GIMBAL_MANAGER_SET_ATTITUDE with NaN quaternion — rate path not yet supported");
+        return;
+    }
+
+    // TODO(item-6): honor frame flags (YAW_IN_VEHICLE_FRAME vs
+    // YAW_IN_EARTH_FRAME) and RETRACT / NEUTRAL shortcuts.
+    let (pitch_deg, roll_deg, yaw_deg) = quaternion_wxyz_to_euler_deg(m.q);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
         CommandMode::Position,
-        Some(0.0),
-        Some(0.0),
-        Some(0.0),
+        Some(yaw_deg),
+        Some(pitch_deg),
+        Some(roll_deg),
     );
     dispatch_gimbal_command(command, ctx, "SET_ATTITUDE").await;
 }
@@ -421,43 +431,9 @@ async fn send_mavlink_message(
     Ok(())
 }
 
-/// Convert a `COMMAND_LONG` param (`f32`) to a MAVLink sysid/compid byte.
-///
-/// The MAVLink v2 spec reserves negative values (-3, -2, -1) for special
-/// semantics on `MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE`. They are not yet
-/// honored here — any non-positive value collapses to 0 ("unset").
-///
-/// TODO(item-5): implement -3 (retain current) / -2 (reset to default) /
-/// -1 (no primary) per MAVLink spec.
-fn to_id_byte(v: f32) -> u8 {
-    if !v.is_finite() || v < 0.0 {
-        return 0;
-    }
-    let r = v.round();
-    if r > 255.0 {
-        255
-    } else {
-        r as u8
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn to_id_byte_clamps_and_rejects_special_values() {
-        assert_eq!(to_id_byte(7.0), 7);
-        assert_eq!(to_id_byte(7.4), 7);
-        assert_eq!(to_id_byte(7.6), 8);
-        assert_eq!(to_id_byte(0.0), 0);
-        assert_eq!(to_id_byte(300.0), 255);
-        assert_eq!(to_id_byte(-1.0), 0);
-        assert_eq!(to_id_byte(-3.0), 0);
-        assert_eq!(to_id_byte(f32::NAN), 0);
-        assert_eq!(to_id_byte(f32::INFINITY), 0);
-        assert_eq!(to_id_byte(f32::NEG_INFINITY), 0);
-    }
 
     #[test]
     fn addressed_to_us_matches_broadcast_and_our_sysid() {

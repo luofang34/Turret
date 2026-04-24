@@ -5,6 +5,8 @@
 
 #[path = "mavlink_manager/handlers.rs"]
 mod handlers;
+#[path = "mavlink_manager/math.rs"]
+mod math;
 
 use super::arbitrator::Arbitrator;
 use super::config::MavlinkConfig;
