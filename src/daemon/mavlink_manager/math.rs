@@ -59,6 +59,7 @@ pub(super) fn to_id_byte(v: f32) -> u8 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

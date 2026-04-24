@@ -827,6 +827,7 @@ dependencies = [
  "env_logger",
  "log",
  "mavlink",
+ "parking_lot",
  "serde",
  "serde_json",
  "serde_yaml",
