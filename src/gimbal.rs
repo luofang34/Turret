@@ -1,73 +1,84 @@
-use anyhow::Result;
+//! Gimbal device abstraction and runtime auto-detection.
 
-/// Gimbal attitude (Euler angles in degrees)
+use crate::error::{Error, Result};
+
+/// Gimbal attitude (Euler angles in degrees).
 #[derive(Debug, Clone, Copy)]
 pub struct Attitude {
+    /// Pitch angle in degrees.
     pub pitch: f32,
+    /// Roll angle in degrees.
     pub roll: f32,
+    /// Yaw angle in degrees.
     pub yaw: f32,
 }
 
-/// Common interface for all gimbal devices
+/// Common interface for all gimbal devices.
+///
+/// Implementations are synchronous (serial I/O happens on the calling thread).
+/// Callers that need async use should wrap in `spawn_blocking` or similar.
 pub trait GimbalDevice: Send {
-    /// Get the protocol name
+    /// Human-readable protocol name used by this backend.
     fn protocol_name(&self) -> &'static str;
 
-    /// Set gimbal attitude (Euler angles in degrees)
+    /// Command the gimbal to the given Euler attitude (degrees).
     fn set_attitude(&mut self, pitch: f32, roll: f32, yaw: f32) -> Result<()>;
 
-    /// Get current gimbal attitude
+    /// Query current attitude from the device.
     fn get_attitude(&mut self) -> Result<Attitude>;
 
-    /// Center gimbal (convenience method)
+    /// Command the gimbal to its center (0, 0, 0).
     fn center(&mut self) -> Result<()> {
         self.set_attitude(0.0, 0.0, 0.0)
     }
 
-    /// Set pan mode (optional, may not be supported)
+    /// Set pan mode (optional — default returns [`Error::Unsupported`]).
     fn set_pan_mode(&mut self, _mode: u8) -> Result<()> {
-        Err(anyhow::anyhow!("Pan mode not supported by {} protocol", self.protocol_name()))
+        Err(Error::Unsupported {
+            protocol: self.protocol_name(),
+            op: "set_pan_mode",
+        })
     }
 
-    /// Set standby mode (optional, may not be supported)
+    /// Set standby mode (optional — default returns [`Error::Unsupported`]).
     fn set_standby(&mut self, _enabled: bool) -> Result<()> {
-        Err(anyhow::anyhow!("Standby mode not supported by {} protocol", self.protocol_name()))
+        Err(Error::Unsupported {
+            protocol: self.protocol_name(),
+            op: "set_standby",
+        })
     }
 
-    /// Get firmware version (optional, may not be supported)
+    /// Get firmware version (optional — default returns [`Error::Unsupported`]).
     fn get_version(&mut self) -> Result<String> {
-        Err(anyhow::anyhow!("Version query not supported by {} protocol", self.protocol_name()))
+        Err(Error::Unsupported {
+            protocol: self.protocol_name(),
+            op: "get_version",
+        })
     }
 
-    /// Downcast to Any for type-specific access
-    fn as_any(&self) -> &dyn std::any::Any {
-        panic!("as_any not implemented for {}", self.protocol_name())
+    /// Downcast hook for protocol-specific access. Implementors that want to
+    /// expose extension APIs return `Some(self)`; the default is `None`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
     }
 
-    /// Downcast to Any mutable for type-specific access
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        panic!("as_any_mut not implemented for {}", self.protocol_name())
+    /// Mutable variant of [`GimbalDevice::as_any`].
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
     }
 }
 
-/// Detect and initialize gimbal device on given serial port
+/// Detect and initialize a gimbal on `device_path`, trying each supported
+/// protocol in turn.
 pub fn detect_gimbal(device_path: &str) -> Result<Box<dyn GimbalDevice>> {
     use crate::protocols::storm32_rc::Storm32RC;
 
-    // Try protocols in order of likelihood
-
-    // 1. STorM32 RC Commands (most common for this project)
     if let Ok(gimbal) = Storm32RC::try_detect(device_path) {
         return Ok(Box::new(gimbal));
     }
 
-    // 2. Add more protocols here in future:
-    // if let Ok(gimbal) = MAVLinkGimbal::try_detect(device_path) {
-    //     return Ok(Box::new(gimbal));
-    // }
-
-    Err(anyhow::anyhow!(
-        "No supported gimbal protocol detected on {}. Tried: STorM32 RC",
-        device_path
-    ))
+    Err(Error::NotDetected {
+        device: device_path.to_string(),
+        tried: "STorM32 RC".to_string(),
+    })
 }

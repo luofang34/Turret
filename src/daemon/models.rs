@@ -40,19 +40,19 @@ impl PanMode {
 /// Control source for gimbal commands
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlSource {
-    UnixSocket(u32),  // Client ID
-    Mavlink(u8),      // System ID
-    Cli,              // CLI test commands
+    UnixSocket(u32), // Client ID
+    Mavlink(u8),     // System ID
+    Cli,             // CLI test commands
 }
 
 impl ControlSource {
     /// Get priority level (higher = more authority)
     pub fn priority(&self) -> u8 {
         match self {
-            ControlSource::Mavlink(1) => 100,  // Autopilot (sysid 1)
-            ControlSource::Mavlink(_) => 50,   // Other MAVLink systems (GCS)
+            ControlSource::Mavlink(1) => 100,   // Autopilot (sysid 1)
+            ControlSource::Mavlink(_) => 50,    // Other MAVLink systems (GCS)
             ControlSource::UnixSocket(_) => 20, // Local clients
-            ControlSource::Cli => 10,          // CLI test commands (lowest)
+            ControlSource::Cli => 10,           // CLI test commands (lowest)
         }
     }
 }
@@ -60,9 +60,9 @@ impl ControlSource {
 /// Command mode for gimbal control
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum CommandMode {
-    Position,  // Absolute angle in degrees
-    Rate,      // Angular velocity in degrees/second
-    Manual,    // Direct stick-like inputs (-1.0 to +1.0)
+    Position, // Absolute angle in degrees
+    Rate,     // Angular velocity in degrees/second
+    Manual,   // Direct stick-like inputs (-1.0 to +1.0)
 }
 
 /// Gimbal command with source and timestamp

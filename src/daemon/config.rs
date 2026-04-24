@@ -59,7 +59,7 @@ impl Default for DaemonConfig {
                 udp_port: 14550,
                 serial_device: None,
                 sysid: 1,
-                compid: 154,  // MAV_COMP_ID_GIMBAL
+                compid: 154, // MAV_COMP_ID_GIMBAL
             },
             logging: LoggingConfig {
                 level: "info".to_string(),

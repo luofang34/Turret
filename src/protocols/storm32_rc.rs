@@ -38,38 +38,38 @@ pub struct GimbalAngles {
 
 #[derive(Debug, Clone, Copy)]
 pub struct GimbalStatus {
-    pub pv: GimbalAngles,  // Process Variable (current angles)
-    pub sp: GimbalAngles,  // Set Point (target angles)
+    pub pv: GimbalAngles, // Process Variable (current angles)
+    pub sp: GimbalAngles, // Set Point (target angles)
 }
 
 // RC Command protocol constants based on STorM32 documentation
-const RC_START_SIGN_IN: u8 = 0xFA;   // Incoming messages (to gimbal)
-const RC_START_SIGN_OUT: u8 = 0xFB;  // Outgoing messages (from gimbal)
+const RC_START_SIGN_IN: u8 = 0xFA; // Incoming messages (to gimbal)
+const RC_START_SIGN_OUT: u8 = 0xFB; // Outgoing messages (from gimbal)
 
 // Command IDs from STorM32 RC Commands protocol
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum RCCommand {
-    GetVersion = 1,           // CMD_GETVERSION
-    GetVersionStr = 2,        // CMD_GETVERSIONSTR
-    GetParameter = 3,         // CMD_GETPARAMETER
-    SetParameter = 4,         // CMD_SETPARAMETER
-    GetData = 5,              // CMD_GETDATA
-    GetDataFields = 6,        // CMD_GETDATAFIELDS
-    SetPitch = 10,            // CMD_SETPITCH
-    SetRoll = 11,             // CMD_SETROLL
-    SetYaw = 12,              // CMD_SETYAW
-    SetPanMode = 13,          // CMD_SETPANMODE
-    SetStandby = 14,          // CMD_SETSTANDBY
-    DoCamera = 15,            // CMD_DOCAMERA
-    SetScriptControl = 16,    // CMD_SETSCRIPTCONTROL
-    SetAngle = 17,            // CMD_SETANGLE  
-    SetPitchRollYaw = 18,     // CMD_SETPITCHROLLYAW
-    SetPwmOut = 19,           // CMD_SETPWMOUT
-    RestoreParameter = 20,    // CMD_RESTOREPARAMETER
-    RestoreAllParameter = 21, // CMD_RESTOREALLPARAMETER
+    GetVersion = 1,             // CMD_GETVERSION
+    GetVersionStr = 2,          // CMD_GETVERSIONSTR
+    GetParameter = 3,           // CMD_GETPARAMETER
+    SetParameter = 4,           // CMD_SETPARAMETER
+    GetData = 5,                // CMD_GETDATA
+    GetDataFields = 6,          // CMD_GETDATAFIELDS
+    SetPitch = 10,              // CMD_SETPITCH
+    SetRoll = 11,               // CMD_SETROLL
+    SetYaw = 12,                // CMD_SETYAW
+    SetPanMode = 13,            // CMD_SETPANMODE
+    SetStandby = 14,            // CMD_SETSTANDBY
+    DoCamera = 15,              // CMD_DOCAMERA
+    SetScriptControl = 16,      // CMD_SETSCRIPTCONTROL
+    SetAngle = 17,              // CMD_SETANGLE
+    SetPitchRollYaw = 18,       // CMD_SETPITCHROLLYAW
+    SetPwmOut = 19,             // CMD_SETPWMOUT
+    RestoreParameter = 20,      // CMD_RESTOREPARAMETER
+    RestoreAllParameter = 21,   // CMD_RESTOREALLPARAMETER
     ActivePanModeSetting = 100, // CMD_ACTIVEPANMODESETTING
-    Ack = 150,                // CMD_ACK
+    Ack = 150,                  // CMD_ACK
 }
 
 #[derive(Debug)]
@@ -82,27 +82,27 @@ impl RCMessage {
     pub fn new(command: RCCommand, payload: Vec<u8>) -> Self {
         Self { command, payload }
     }
-    
+
     // Create payload for CMD_SETANGLE command with float angles
     // Format: float1(4) float2(4) float3(4) flags(1) type(1) = 14 bytes total
     pub fn create_set_angle_payload(pitch: f32, roll: f32, yaw: f32) -> Vec<u8> {
         let mut payload = Vec::new();
-        
+
         // Add pitch, roll, yaw as 32-bit floats (little-endian)
         payload.extend_from_slice(&pitch.to_le_bytes());
         payload.extend_from_slice(&roll.to_le_bytes());
         payload.extend_from_slice(&yaw.to_le_bytes());
-        
+
         // Flags: 0x00 for unlimited mode (bypasses RcMin/RcMax)
         // Bit 0x01 = pitch limited, 0x02 = roll limited, 0x04 = yaw limited
         payload.push(0x00);
-        
+
         // Type: 0x00 (not used currently)
         payload.push(0x00);
-        
+
         payload
     }
-    
+
     // Create payload for CMD_SETPITCHROLLYAW command with uint16 values
     // Format: pitch(2) roll(2) yaw(2) = 6 bytes total
     // Values: 700-2300 for control, 0 to recenter
@@ -113,55 +113,55 @@ impl RCMessage {
         payload.extend_from_slice(&yaw.to_le_bytes());
         payload
     }
-    
+
     // Create payload for individual axis commands (CMD_SETPITCH, CMD_SETROLL, CMD_SETYAW)
     // Format: value(2) = 2 bytes total
     // Values: 700-2300 for control, 0 to recenter
     pub fn create_single_axis_payload(value: u16) -> Vec<u8> {
         value.to_le_bytes().to_vec()
     }
-    
+
     // Create payload for CMD_GETDATAFIELDS
     // Format: bitmask(2) = 2 bytes total
     pub fn create_get_data_fields_payload(bitmask: u16) -> Vec<u8> {
         bitmask.to_le_bytes().to_vec()
     }
-    
+
     // Create payload for CMD_SETPANMODE
     // Format: mode(1) = 1 byte total
     pub fn create_set_pan_mode_payload(mode: u8) -> Vec<u8> {
         vec![mode]
     }
-    
+
     // Create payload for CMD_SETSTANDBY
     // Format: state(1) = 1 byte total
     pub fn create_set_standby_payload(state: u8) -> Vec<u8> {
         vec![state]
     }
-    
+
     // Serialize message to bytes according to RC Commands protocol
     pub fn serialize(&self) -> Vec<u8> {
         let mut message = Vec::new();
-        
+
         // Start sign (0xFA for incoming messages)
         message.push(RC_START_SIGN_IN);
-        
+
         // Length (payload only, excluding start sign, length byte, command byte, and CRC)
         message.push(self.payload.len() as u8);
-        
+
         // Command byte
         message.push(self.command as u8);
-        
+
         // Payload
         message.extend_from_slice(&self.payload);
-        
+
         // Calculate and append CRC16 (x25 algorithm)
         let crc = self.calculate_crc16(&message[1..]);
         message.extend_from_slice(&crc.to_le_bytes());
-        
+
         message
     }
-    
+
     // CRC16 x25 algorithm (same as Mavlink and STorM32)
     // Based on official STorM32 implementation
     fn calculate_crc16(&self, data: &[u8]) -> u16 {
@@ -188,32 +188,42 @@ impl RCMessage {
 
         crc == expected_crc
     }
-    
+
     // Parse incoming message from gimbal
     pub fn parse_response(data: &[u8]) -> Result<Vec<u8>> {
         // Handle single byte ACK responses (common for SET commands)
         if data.len() == 1 {
             // Single byte response - likely a simple ACK
             // Common ACK values: 0x4A (74) seems to be success
-            return Ok(vec![]);  // Return empty payload for ACK
+            return Ok(vec![]); // Return empty payload for ACK
         }
 
         if data.len() < 3 {
-            return Err(Storm32Error::ProtocolError(format!("Response too short: got {} bytes, need at least 3", data.len())));
+            return Err(Storm32Error::ProtocolError(format!(
+                "Response too short: got {} bytes, need at least 3",
+                data.len()
+            )));
         }
 
         // Check start sign
         if data[0] != RC_START_SIGN_OUT {
-            return Err(Storm32Error::ProtocolError(format!("Invalid start sign: expected 0xFB, got 0x{:02X}", data[0])));
+            return Err(Storm32Error::ProtocolError(format!(
+                "Invalid start sign: expected 0xFB, got 0x{:02X}",
+                data[0]
+            )));
         }
-        
+
         let length = data[1] as usize;
         // Length field specifies payload size (not including command byte)
         // Total message: start(1) + length(1) + command(1) + payload(length) + CRC(2)
         let expected_total = 1 + 1 + 1 + length + 2;
 
         if data.len() < expected_total {
-            return Err(Storm32Error::ProtocolError(format!("Incomplete message: got {} bytes, expected {}", data.len(), expected_total)));
+            return Err(Storm32Error::ProtocolError(format!(
+                "Incomplete message: got {} bytes, expected {}",
+                data.len(),
+                expected_total
+            )));
         }
 
         // Extract command byte and payload
@@ -224,7 +234,7 @@ impl RCMessage {
         let payload = if length > 0 {
             data[payload_start..payload_end].to_vec()
         } else {
-            vec![]  // Empty payload (just command byte)
+            vec![] // Empty payload (just command byte)
         };
 
         // Verify CRC16 (last 2 bytes of message)
@@ -237,9 +247,15 @@ impl RCMessage {
             let crc_data = &data[1..payload_end];
 
             if !Self::verify_crc16(crc_data, received_crc) {
-                debug!("CRC verification failed: expected valid CRC, got 0x{:04X}", received_crc);
+                debug!(
+                    "CRC verification failed: expected valid CRC, got 0x{:04X}",
+                    received_crc
+                );
                 debug!("  Data for CRC: {:02X?}", crc_data);
-                debug!("  Command byte: 0x{:02X}, Length: {}, Payload: {:02X?}", command_byte, length, payload);
+                debug!(
+                    "  Command byte: 0x{:02X}, Length: {}, Payload: {:02X?}",
+                    command_byte, length, payload
+                );
                 return Err(Storm32Error::CrcError(received_crc));
             }
 
@@ -260,13 +276,18 @@ impl Storm32Gimbal {
     fn validate_device_path(device_path: &str) -> Result<()> {
         // Reject path traversal attempts
         if device_path.contains("..") {
-            return Err(Storm32Error::ValidationError("Invalid device path: path traversal detected".to_string()));
+            return Err(Storm32Error::ValidationError(
+                "Invalid device path: path traversal detected".to_string(),
+            ));
         }
 
         // Check if path exists
         let path = Path::new(device_path);
         if !path.exists() {
-            return Err(Storm32Error::DeviceError(format!("Device path does not exist: {}", device_path)));
+            return Err(Storm32Error::DeviceError(format!(
+                "Device path does not exist: {}",
+                device_path
+            )));
         }
 
         // On Unix systems, verify it's a character device
@@ -277,7 +298,10 @@ impl Storm32Gimbal {
             let file_type = metadata.file_type();
 
             if !file_type.is_char_device() {
-                return Err(Storm32Error::DeviceError(format!("Path is not a character device: {}", device_path)));
+                return Err(Storm32Error::DeviceError(format!(
+                    "Path is not a character device: {}",
+                    device_path
+                )));
             }
         }
 
@@ -295,8 +319,16 @@ impl Storm32Gimbal {
         let gimbal = Self {
             port,
             current_status: GimbalStatus {
-                pv: GimbalAngles { pitch: 0.0, roll: 0.0, yaw: 0.0 },
-                sp: GimbalAngles { pitch: 0.0, roll: 0.0, yaw: 0.0 },
+                pv: GimbalAngles {
+                    pitch: 0.0,
+                    roll: 0.0,
+                    yaw: 0.0,
+                },
+                sp: GimbalAngles {
+                    pitch: 0.0,
+                    roll: 0.0,
+                    yaw: 0.0,
+                },
             },
         };
 
@@ -306,7 +338,7 @@ impl Storm32Gimbal {
     pub fn get_status(&self) -> GimbalStatus {
         self.current_status
     }
-    
+
     // Send RC command and read response
     fn send_rc_command(&mut self, message: &RCMessage) -> Result<Vec<u8>> {
         // Flush input buffer to discard any stale data from previous commands
@@ -370,28 +402,39 @@ impl Storm32Gimbal {
         }
 
         if total_bytes == 0 {
-            return Err(Storm32Error::ProtocolError("No response received".to_string()));
+            return Err(Storm32Error::ProtocolError(
+                "No response received".to_string(),
+            ));
         }
 
         trace!("Received RC response: {:02X?}", &buffer[..total_bytes]);
         RCMessage::parse_response(&buffer[..total_bytes])
     }
-    
+
     // Validate angle values (typical gimbal range is -180 to +180 degrees)
     fn validate_angle(angle: f32, name: &str) -> Result<()> {
         if !angle.is_finite() {
-            return Err(Storm32Error::ValidationError(format!("{} must be a finite number", name)));
+            return Err(Storm32Error::ValidationError(format!(
+                "{} must be a finite number",
+                name
+            )));
         }
-        if angle < -180.0 || angle > 180.0 {
-            return Err(Storm32Error::ValidationError(format!("{} must be between -180° and +180° (got {:.1}°)", name, angle)));
+        if !(-180.0..=180.0).contains(&angle) {
+            return Err(Storm32Error::ValidationError(format!(
+                "{} must be between -180° and +180° (got {:.1}°)",
+                name, angle
+            )));
         }
         Ok(())
     }
 
     // Validate RC values (700-2300 or 0 for recenter)
     fn validate_rc_value(value: u16, name: &str) -> Result<()> {
-        if value != 0 && (value < 700 || value > 2300) {
-            return Err(Storm32Error::ValidationError(format!("{} must be 0 (recenter) or 700-2300 (got {})", name, value)));
+        if value != 0 && !(700..=2300).contains(&value) {
+            return Err(Storm32Error::ValidationError(format!(
+                "{} must be 0 (recenter) or 700-2300 (got {})",
+                name, value
+            )));
         }
         Ok(())
     }
@@ -399,7 +442,10 @@ impl Storm32Gimbal {
     // Validate pan mode (0-5 only)
     fn validate_pan_mode(mode: u8) -> Result<()> {
         if mode > 5 {
-            return Err(Storm32Error::ValidationError(format!("Pan mode must be 0-5 (got {})", mode)));
+            return Err(Storm32Error::ValidationError(format!(
+                "Pan mode must be 0-5 (got {})",
+                mode
+            )));
         }
         Ok(())
     }
@@ -423,18 +469,18 @@ impl Storm32Gimbal {
             Err(e) => Err(e),
         }
     }
-    
+
     // Set gimbal angles using CMD_SETPITCHROLLYAW (RC values 700-2300)
     pub fn set_angles_rc(&mut self, pitch: u16, roll: u16, yaw: u16) -> Result<()> {
         let payload = RCMessage::create_set_pitch_roll_yaw_payload(pitch, roll, yaw);
         let message = RCMessage::new(RCCommand::SetPitchRollYaw, payload);
-        
+
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
             Err(e) => Err(e),
         }
     }
-    
+
     // Set individual pitch axis using CMD_SETPITCH
     pub fn set_pitch(&mut self, value: u16) -> Result<()> {
         Self::validate_rc_value(value, "Pitch")?;
@@ -473,7 +519,7 @@ impl Storm32Gimbal {
             Err(e) => Err(e),
         }
     }
-    
+
     // Recenter individual axes (value = 0)
     pub fn recenter_pitch(&mut self) -> Result<()> {
         self.set_pitch(0)
@@ -486,14 +532,14 @@ impl Storm32Gimbal {
     pub fn recenter_yaw(&mut self) -> Result<()> {
         self.set_yaw(0)
     }
-    
+
     // Get current gimbal status using CMD_GETDATAFIELDS
     pub fn update_status(&mut self) -> Result<()> {
         // Request IMU1 angles (0x0020) which contains current angles
         let bitmask = 0x0020u16; // LIVEDATA_IMU1ANGLES
         let payload = RCMessage::create_get_data_fields_payload(bitmask);
         let message = RCMessage::new(RCCommand::GetDataFields, payload);
-        
+
         match self.send_rc_command(&message) {
             Ok(response) => {
                 // Check if we got a meaningful response
@@ -512,17 +558,20 @@ impl Storm32Gimbal {
             }
         }
     }
-    
+
     // Parse response from CMD_GETDATAFIELDS
     fn parse_data_fields_response(&mut self, response: &[u8]) -> Result<()> {
         if response.len() < 7 {
-            return Err(Storm32Error::ProtocolError(format!("Data fields response too short: {} bytes", response.len())));
+            return Err(Storm32Error::ProtocolError(format!(
+                "Data fields response too short: {} bytes",
+                response.len()
+            )));
         }
-        
+
         // Response format: [command_byte, bitmask_low, bitmask_high, data...]
         // Skip command byte (index 0) and get bitmask from bytes 1-2
         let _bitmask = u16::from_le_bytes([response[1], response[2]]);
-        
+
         // For IMU1ANGLES (0x0020), the data should be 3 x 2-byte signed integers
         // representing angles in 0.01 degree units
         if response.len() >= 7 {
@@ -530,7 +579,7 @@ impl Storm32Gimbal {
             let roll_raw = i16::from_le_bytes([response[5], response[6]]);
             // We only have 4 bytes of data, so only pitch and roll are available
             let yaw_raw = 0i16; // Default to 0 if not enough data
-            
+
             // Convert from 0.01 degree units to degrees
             self.current_status.pv = GimbalAngles {
                 pitch: pitch_raw as f32 / 100.0,
@@ -538,10 +587,10 @@ impl Storm32Gimbal {
                 yaw: yaw_raw as f32 / 100.0,
             };
         }
-        
+
         Ok(())
     }
-    
+
     // Set pan mode using CMD_SETPANMODE
     pub fn set_pan_mode(&mut self, mode: u8) -> Result<()> {
         Self::validate_pan_mode(mode)?;
@@ -554,23 +603,23 @@ impl Storm32Gimbal {
             Err(e) => Err(e),
         }
     }
-    
+
     // Set standby mode using CMD_SETSTANDBY
     pub fn set_standby(&mut self, enabled: bool) -> Result<()> {
         let state = if enabled { 1u8 } else { 0u8 };
         let payload = RCMessage::create_set_standby_payload(state);
         let message = RCMessage::new(RCCommand::SetStandby, payload);
-        
+
         match self.send_rc_command(&message) {
             Ok(_response) => Ok(()),
             Err(e) => Err(e),
         }
     }
-    
+
     // Get firmware version using CMD_GETVERSION
     pub fn get_version(&mut self) -> Result<String> {
         let message = RCMessage::new(RCCommand::GetVersion, Vec::new());
-        
+
         match self.send_rc_command(&message) {
             Ok(response) => {
                 // CMD_GETVERSION returns structured data, not a string
@@ -578,40 +627,57 @@ impl Storm32Gimbal {
                     let firmware_version = u16::from_le_bytes([response[0], response[1]]);
                     let layout_version = u16::from_le_bytes([response[2], response[3]]);
                     let capabilities = u16::from_le_bytes([response[4], response[5]]);
-                    
-                    Ok(format!("Firmware: {}.{}, Layout: {}.{}, Capabilities: 0x{:04X}",
-                        firmware_version >> 8, firmware_version & 0xFF,
-                        layout_version >> 8, layout_version & 0xFF,
-                        capabilities))
+
+                    Ok(format!(
+                        "Firmware: {}.{}, Layout: {}.{}, Capabilities: 0x{:04X}",
+                        firmware_version >> 8,
+                        firmware_version & 0xFF,
+                        layout_version >> 8,
+                        layout_version & 0xFF,
+                        capabilities
+                    ))
                 } else {
-                    Err(Storm32Error::ProtocolError("Version response too short".to_string()))
+                    Err(Storm32Error::ProtocolError(
+                        "Version response too short".to_string(),
+                    ))
                 }
             }
             Err(e) => Err(e),
         }
     }
-    
+
     // Get firmware version string using CMD_GETVERSIONSTR
     pub fn get_version_string(&mut self) -> Result<String> {
         let message = RCMessage::new(RCCommand::GetVersionStr, Vec::new());
-        
+
         match self.send_rc_command(&message) {
             Ok(response) => {
                 if response.len() >= 48 {
                     // Response contains: 16-byte version string, 16-byte name string, 16-byte board string
-                    let version_str = String::from_utf8_lossy(&response[0..16]).trim_end_matches('\0').to_string();
-                    let name_str = String::from_utf8_lossy(&response[16..32]).trim_end_matches('\0').to_string();
-                    let board_str = String::from_utf8_lossy(&response[32..48]).trim_end_matches('\0').to_string();
-                    
-                    Ok(format!("Version: '{}', Name: '{}', Board: '{}'", version_str, name_str, board_str))
+                    let version_str = String::from_utf8_lossy(&response[0..16])
+                        .trim_end_matches('\0')
+                        .to_string();
+                    let name_str = String::from_utf8_lossy(&response[16..32])
+                        .trim_end_matches('\0')
+                        .to_string();
+                    let board_str = String::from_utf8_lossy(&response[32..48])
+                        .trim_end_matches('\0')
+                        .to_string();
+
+                    Ok(format!(
+                        "Version: '{}', Name: '{}', Board: '{}'",
+                        version_str, name_str, board_str
+                    ))
                 } else {
-                    Err(Storm32Error::ProtocolError("Version string response too short".to_string()))
+                    Err(Storm32Error::ProtocolError(
+                        "Version string response too short".to_string(),
+                    ))
                 }
             }
             Err(e) => Err(e),
         }
     }
-    
+
     // Debug method to send raw RC command for testing
     #[allow(dead_code)]
     pub fn debug_send_raw(&mut self, command: RCCommand, payload: Vec<u8>) -> Result<Vec<u8>> {
@@ -626,15 +692,13 @@ impl crate::gimbal::GimbalDevice for Storm32Gimbal {
         "STorM32 RC Commands"
     }
 
-    fn set_attitude(&mut self, pitch: f32, roll: f32, yaw: f32) -> anyhow::Result<()> {
-        self.set_angles(pitch, roll, yaw)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+    fn set_attitude(&mut self, pitch: f32, roll: f32, yaw: f32) -> crate::error::Result<()> {
+        self.set_angles(pitch, roll, yaw)?;
+        Ok(())
     }
 
-    fn get_attitude(&mut self) -> anyhow::Result<crate::gimbal::Attitude> {
-        self.update_status()
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-
+    fn get_attitude(&mut self) -> crate::error::Result<crate::gimbal::Attitude> {
+        self.update_status()?;
         let status = self.get_status();
         Ok(crate::gimbal::Attitude {
             pitch: status.pv.pitch,
@@ -643,27 +707,26 @@ impl crate::gimbal::GimbalDevice for Storm32Gimbal {
         })
     }
 
-    fn set_pan_mode(&mut self, mode: u8) -> anyhow::Result<()> {
-        Storm32Gimbal::set_pan_mode(self, mode)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+    fn set_pan_mode(&mut self, mode: u8) -> crate::error::Result<()> {
+        Storm32Gimbal::set_pan_mode(self, mode)?;
+        Ok(())
     }
 
-    fn set_standby(&mut self, enabled: bool) -> anyhow::Result<()> {
-        Storm32Gimbal::set_standby(self, enabled)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+    fn set_standby(&mut self, enabled: bool) -> crate::error::Result<()> {
+        Storm32Gimbal::set_standby(self, enabled)?;
+        Ok(())
     }
 
-    fn get_version(&mut self) -> anyhow::Result<String> {
-        Storm32Gimbal::get_version(self)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+    fn get_version(&mut self) -> crate::error::Result<String> {
+        Ok(Storm32Gimbal::get_version(self)?)
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -671,25 +734,21 @@ impl crate::gimbal::GimbalDevice for Storm32Gimbal {
 pub type Storm32RC = Storm32Gimbal;
 
 impl Storm32RC {
-    /// Try to detect and initialize a STorM32 RC device on the given port
-    pub fn try_detect(device_path: &str) -> anyhow::Result<Self> {
-        // Validate and open port
-        Self::validate_device_path(device_path)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+    /// Try to detect and initialize a STorM32 RC device on the given port.
+    pub fn try_detect(device_path: &str) -> crate::error::Result<Self> {
+        Self::validate_device_path(device_path)?;
 
-        let mut gimbal = Self::new(device_path)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let mut gimbal = Self::new(device_path)?;
 
-        // Try to get version to verify it's a STorM32 device
+        // Version probe — confirms this is really a STorM32.
         match gimbal.get_version() {
             Ok(version) => {
                 log::info!("Detected STorM32 RC device: {}", version);
                 Ok(gimbal)
             }
             Err(e) => {
-                // Version command failed - might not be STorM32
                 log::debug!("STorM32 RC detection failed: {}", e);
-                Err(anyhow::anyhow!("Not a STorM32 RC device: {}", e))
+                Err(e.into())
             }
         }
     }

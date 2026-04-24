@@ -1,22 +1,24 @@
 use anyhow::{anyhow, Result};
 use clap::{Arg, Command};
-use log::{info, debug, error, LevelFilter};
+use log::{debug, error, info, LevelFilter};
 
-mod daemon;
-mod device_scanner;
-mod gimbal;
-mod protocols;
-
-use device_scanner::DeviceScanner;
-use gimbal::GimbalDevice;
-use protocols::storm32_rc::Storm32RC;
+use turret::daemon;
+use turret::device_scanner::DeviceScanner;
+use turret::gimbal::{self, GimbalDevice};
+use turret::protocols::storm32_rc::Storm32RC;
 
 // Helper to get Storm32-specific features
 fn as_storm32(gimbal: &mut Box<dyn GimbalDevice>) -> Result<&mut Storm32RC> {
     let protocol_name = gimbal.protocol_name().to_string();
-    gimbal.as_any_mut()
-        .downcast_mut::<Storm32RC>()
-        .ok_or_else(|| anyhow!("Gimbal is not a Storm32RC device. Protocol: {}", protocol_name))
+    gimbal
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<Storm32RC>())
+        .ok_or_else(|| {
+            anyhow!(
+                "Gimbal is not a Storm32RC device. Protocol: {}",
+                protocol_name
+            )
+        })
 }
 
 fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
@@ -29,37 +31,52 @@ fn parse_angles(args: &[String]) -> Result<(f32, f32, f32)> {
         } else if input.contains(':') {
             ':'
         } else {
-            return Err(anyhow!("Invalid single argument format. Use: pitch,roll,yaw or pitch:roll:yaw"));
+            return Err(anyhow!(
+                "Invalid single argument format. Use: pitch,roll,yaw or pitch:roll:yaw"
+            ));
         };
 
         let parts: Vec<&str> = input.split(separator).collect();
         if parts.len() != 3 {
             return Err(anyhow!(
                 "Format must contain exactly 3 values: pitch{}roll{}yaw (got {})",
-                separator, separator, parts.len()
+                separator,
+                separator,
+                parts.len()
             ));
         }
 
-        let pitch = parts[0].trim().parse::<f32>()
+        let pitch = parts[0]
+            .trim()
+            .parse::<f32>()
             .map_err(|_| anyhow!("Invalid pitch value: '{}'", parts[0]))?;
-        let roll = parts[1].trim().parse::<f32>()
+        let roll = parts[1]
+            .trim()
+            .parse::<f32>()
             .map_err(|_| anyhow!("Invalid roll value: '{}'", parts[1]))?;
-        let yaw = parts[2].trim().parse::<f32>()
+        let yaw = parts[2]
+            .trim()
+            .parse::<f32>()
             .map_err(|_| anyhow!("Invalid yaw value: '{}'", parts[2]))?;
 
         Ok((pitch, roll, yaw))
     } else if args.len() == 3 {
         // Three separate arguments
-        let pitch = args[0].parse::<f32>()
+        let pitch = args[0]
+            .parse::<f32>()
             .map_err(|_| anyhow!("Invalid pitch value: '{}'", args[0]))?;
-        let roll = args[1].parse::<f32>()
+        let roll = args[1]
+            .parse::<f32>()
             .map_err(|_| anyhow!("Invalid roll value: '{}'", args[1]))?;
-        let yaw = args[2].parse::<f32>()
+        let yaw = args[2]
+            .parse::<f32>()
             .map_err(|_| anyhow!("Invalid yaw value: '{}'", args[2]))?;
 
         Ok((pitch, roll, yaw))
     } else {
-        Err(anyhow!("Invalid arguments. Use: 'pitch roll yaw', 'pitch,roll,yaw', or 'pitch:roll:yaw'"))
+        Err(anyhow!(
+            "Invalid arguments. Use: 'pitch roll yaw', 'pitch,roll,yaw', or 'pitch:roll:yaw'"
+        ))
     }
 }
 
@@ -154,7 +171,7 @@ async fn main() -> Result<()> {
         2 => LevelFilter::Debug,
         _ => LevelFilter::Trace,
     };
-    
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .filter_level(log_level)
         .init();
@@ -204,14 +221,18 @@ async fn main() -> Result<()> {
 
     match matches.subcommand() {
         Some(("set", sub_matches)) => {
-            let angle_args: Vec<String> = sub_matches.get_many::<String>("angles")
+            let angle_args: Vec<String> = sub_matches
+                .get_many::<String>("angles")
                 .unwrap()
                 .cloned()
                 .collect();
-            
+
             let (pitch, roll, yaw) = parse_angles(&angle_args)?;
 
-            info!("Setting angles: pitch={:.1}°, roll={:.1}°, yaw={:.1}°", pitch, roll, yaw);
+            info!(
+                "Setting angles: pitch={:.1}°, roll={:.1}°, yaw={:.1}°",
+                pitch, roll, yaw
+            );
             gimbal.set_attitude(pitch, roll, yaw)?;
             info!("Angles set successfully");
         }
@@ -223,8 +244,10 @@ async fn main() -> Result<()> {
         Some(("status", _)) => {
             debug!("Getting gimbal status...");
             let attitude = gimbal.get_attitude()?;
-            println!("Current angles: pitch={:.1}°, roll={:.1}°, yaw={:.1}°",
-                     attitude.pitch, attitude.roll, attitude.yaw);
+            println!(
+                "Current angles: pitch={:.1}°, roll={:.1}°, yaw={:.1}°",
+                attitude.pitch, attitude.roll, attitude.yaw
+            );
         }
         Some(("version", _)) => {
             debug!("Getting firmware version...");
@@ -297,17 +320,17 @@ async fn main() -> Result<()> {
         }
         Some(("pan-mode", sub_matches)) => {
             let mode = *sub_matches.get_one::<u8>("mode").unwrap();
-            
+
             let mode_name = match mode {
                 0 => "OFF",
-                1 => "HOLDHOLDPAN", 
+                1 => "HOLDHOLDPAN",
                 2 => "HOLDHOLDHOLD",
                 3 => "PANPANPAN",
                 4 => "PANHOLDHOLD",
                 5 => "PANHOLDPAN",
                 _ => "UNKNOWN",
             };
-            
+
             info!("Setting pan mode to {} ({})...", mode, mode_name);
             match gimbal.set_pan_mode(mode) {
                 Ok(_) => info!("Pan mode set successfully"),
@@ -324,8 +347,11 @@ async fn main() -> Result<()> {
                     return Err(anyhow::anyhow!("Invalid standby value"));
                 }
             };
-            
-            info!("Setting standby mode to {}...", if enable { "enabled" } else { "disabled" });
+
+            info!(
+                "Setting standby mode to {}...",
+                if enable { "enabled" } else { "disabled" }
+            );
             match gimbal.set_standby(enable) {
                 Ok(_) => info!("Standby mode set successfully"),
                 Err(e) => error!("Failed to set standby mode: {}", e),

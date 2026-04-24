@@ -57,7 +57,7 @@ impl StateManager {
 
         // Check if new command has higher priority than current
         let should_accept = match &*last_cmd {
-            None => true,  // No previous command, accept
+            None => true, // No previous command, accept
             Some(prev) => {
                 // Accept if:
                 // 1. New command has higher priority, OR
@@ -70,8 +70,7 @@ impl StateManager {
                     let prev_priority = prev.source.priority();
 
                     new_priority > prev_priority
-                        || (new_priority == prev_priority
-                            && command.timestamp > prev.timestamp)
+                        || (new_priority == prev_priority && command.timestamp > prev.timestamp)
                 }
             }
         };
@@ -104,7 +103,7 @@ impl Default for StateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::models::CommandMode;
+    use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand};
 
     #[test]
     fn test_state_manager_init() {
