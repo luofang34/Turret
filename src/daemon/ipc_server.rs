@@ -37,7 +37,7 @@ impl IpcServer {
     }
 
     /// Start the IPC server
-    pub async fn start(self) -> anyhow::Result<()> {
+    pub async fn start(self) -> crate::error::Result<()> {
         // Remove existing socket file if present
         let socket_path = &self.config.socket_path;
         if std::path::Path::new(socket_path).exists() {
@@ -92,7 +92,7 @@ impl IpcServer {
         state_manager: StateManager,
         arbitrator: Arc<Arbitrator>,
         gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
-    ) -> anyhow::Result<()> {
+    ) -> crate::error::Result<()> {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         let mut line = String::new();

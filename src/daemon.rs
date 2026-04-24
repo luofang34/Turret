@@ -23,7 +23,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Main daemon entry point
-pub async fn run_daemon(config_path: Option<String>) -> anyhow::Result<()> {
+pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()> {
     // Load configuration
     let config = if let Some(path) = config_path {
         DaemonConfig::load_or_default(path)
@@ -46,7 +46,10 @@ pub async fn run_daemon(config_path: Option<String>) -> anyhow::Result<()> {
             }
             None => {
                 error!("No STorM32 device found. Please specify device path in config.");
-                return Err(anyhow::anyhow!("No device found"));
+                return Err(crate::error::Error::NotDetected {
+                    device: "auto".to_string(),
+                    tried: "STorM32 USB CDC".to_string(),
+                });
             }
         }
     } else {

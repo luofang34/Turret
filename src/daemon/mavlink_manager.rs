@@ -36,7 +36,7 @@ impl MavlinkManager {
     }
 
     /// Start the MAVLink manager
-    pub async fn start(self, config: MavlinkConfig) -> anyhow::Result<()> {
+    pub async fn start(self, config: MavlinkConfig) -> crate::error::Result<()> {
         if config.transport == "udp" {
             self.start_udp(config).await
         } else {
@@ -46,7 +46,7 @@ impl MavlinkManager {
     }
 
     /// Start UDP MAVLink transport
-    async fn start_udp(self, config: MavlinkConfig) -> anyhow::Result<()> {
+    async fn start_udp(self, config: MavlinkConfig) -> crate::error::Result<()> {
         let bind_addr = format!("0.0.0.0:{}", config.udp_port);
         info!("Starting MAVLink manager on UDP {}", bind_addr);
 
@@ -271,7 +271,7 @@ impl MavlinkManager {
         sysid: u8,
         compid: u8,
         msg: MavMessage,
-    ) -> anyhow::Result<()> {
+    ) -> crate::error::Result<()> {
         let header = mavlink::MavHeader {
             system_id: sysid,
             component_id: compid,
