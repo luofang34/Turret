@@ -1,4 +1,4 @@
-use super::models::{GimbalCommand, GimbalState};
+use super::models::{GimbalCommand, GimbalState, PrimaryControl};
 use std::sync::{Arc, RwLock};
 
 /// Thread-safe gimbal state manager
@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 pub struct StateManager {
     state: Arc<RwLock<GimbalState>>,
     last_command: Arc<RwLock<Option<GimbalCommand>>>,
+    primary_control: Arc<RwLock<PrimaryControl>>,
 }
 
 impl StateManager {
@@ -13,6 +14,7 @@ impl StateManager {
         Self {
             state: Arc::new(RwLock::new(GimbalState::default())),
             last_command: Arc::new(RwLock::new(None)),
+            primary_control: Arc::new(RwLock::new(PrimaryControl::default())),
         }
     }
 
@@ -83,6 +85,22 @@ impl StateManager {
         }
     }
 
+    /// Current primary/secondary control ownership.
+    pub fn get_primary_control(&self) -> PrimaryControl {
+        *self.primary_control.read().unwrap()
+    }
+
+    /// Set primary + secondary control. All-zero means "unset / open".
+    pub fn set_primary_control(&self, pc: PrimaryControl) {
+        *self.primary_control.write().unwrap() = pc;
+    }
+
+    /// True if `(sysid, compid)` is authorized to drive the gimbal under the
+    /// current primary-control configuration.
+    pub fn is_primary_allowed(&self, sysid: u8, compid: u8) -> bool {
+        self.get_primary_control().is_allowed(sysid, compid)
+    }
+
     /// Clear stale commands
     pub fn clear_stale_commands(&self) {
         let mut last_cmd = self.last_command.write().unwrap();
@@ -103,7 +121,28 @@ impl Default for StateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand};
+    use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
+
+    #[test]
+    fn primary_control_default_allows_all() {
+        let m = StateManager::new();
+        assert!(m.is_primary_allowed(1, 1));
+        assert!(m.is_primary_allowed(42, 200));
+    }
+
+    #[test]
+    fn primary_control_exact_match_only() {
+        let m = StateManager::new();
+        m.set_primary_control(PrimaryControl {
+            primary_sysid: 7,
+            primary_compid: 190,
+            secondary_sysid: 0,
+            secondary_compid: 0,
+        });
+        assert!(m.is_primary_allowed(7, 190));
+        assert!(!m.is_primary_allowed(7, 191));
+        assert!(!m.is_primary_allowed(8, 190));
+    }
 
     #[test]
     fn test_state_manager_init() {
