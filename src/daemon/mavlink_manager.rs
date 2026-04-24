@@ -4,12 +4,22 @@ use super::models::{CommandMode, ControlSource, GimbalCommand};
 use super::state::StateManager;
 use crate::gimbal::GimbalDevice;
 use log::{debug, error, info, warn};
-use mavlink::ardupilotmega::MavMessage;
+use mavlink::ardupilotmega::{
+    GimbalManagerFlags, MavAutopilot, MavMessage, MavModeFlag, MavState, MavType,
+    GIMBAL_MANAGER_STATUS_DATA, HEARTBEAT_DATA,
+};
+use std::collections::HashSet;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time;
+
+/// Peer set: every GCS (or autopilot) we've ever received a packet from.
+/// Heartbeats and `GIMBAL_MANAGER_STATUS` broadcasts go to every entry.
+type Peers = Arc<Mutex<HashSet<SocketAddr>>>;
 
 /// MAVLink Gimbal Manager implementation
 pub struct MavlinkManager {
@@ -17,6 +27,11 @@ pub struct MavlinkManager {
     state_manager: StateManager,
     arbitrator: Arc<Arbitrator>,
     gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+    peers: Peers,
+    /// Monotonic sequence counter for outbound frames.
+    seq: Arc<AtomicU8>,
+    /// Daemon start time for `time_boot_ms` computation.
+    start_time: Instant,
 }
 
 impl MavlinkManager {
@@ -32,6 +47,9 @@ impl MavlinkManager {
             state_manager,
             arbitrator,
             gimbal,
+            peers: Arc::new(Mutex::new(HashSet::new())),
+            seq: Arc::new(AtomicU8::new(0)),
+            start_time: Instant::now(),
         }
     }
 
@@ -53,24 +71,48 @@ impl MavlinkManager {
         let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
         info!("MAVLink UDP socket bound to {}", bind_addr);
 
-        // Spawn status publisher task
-        let status_socket = socket.clone();
-        let status_state = self.state_manager.clone();
-        let status_config = config.clone();
-        tokio::spawn(async move {
-            Self::publish_status_loop(status_socket, status_state, status_config).await;
-        });
+        // 1 Hz HEARTBEAT — announces us as MAV_TYPE_GIMBAL so any GCS that
+        // hears the packet discovers the gimbal manager.
+        {
+            let socket = socket.clone();
+            let peers = self.peers.clone();
+            let seq = self.seq.clone();
+            let config = config.clone();
+            tokio::spawn(async move {
+                Self::heartbeat_loop(socket, peers, seq, config).await;
+            });
+        }
+
+        // 5 Hz GIMBAL_MANAGER_STATUS — keeps GCSs in sync with primary /
+        // secondary control ownership and gimbal device id.
+        {
+            let socket = socket.clone();
+            let peers = self.peers.clone();
+            let seq = self.seq.clone();
+            let state = self.state_manager.clone();
+            let config = config.clone();
+            let start_time = self.start_time;
+            tokio::spawn(async move {
+                Self::publish_status_loop(socket, peers, seq, state, config, start_time).await;
+            });
+        }
 
         // Main receive loop
         let mut buf = [0u8; 1024];
         let gimbal = self.gimbal.clone();
         let arbitrator = self.arbitrator.clone();
+        let peers = self.peers.clone();
+        let seq = self.seq.clone();
         let mavlink_config = config.clone();
 
         loop {
             match socket.recv_from(&mut buf).await {
                 Ok((len, src_addr)) => {
                     debug!("Received {} bytes from {}", len, src_addr);
+
+                    // Record peer so subsequent HEARTBEAT / STATUS broadcasts
+                    // reach this GCS even if it never sends again.
+                    peers.lock().await.insert(src_addr);
 
                     // Parse MAVLink message
                     let mut reader = mavlink::peek_reader::PeekReader::new(&buf[..len]);
@@ -84,6 +126,7 @@ impl MavlinkManager {
                                 &socket,
                                 src_addr,
                                 &mavlink_config,
+                                &seq,
                                 &gimbal,
                                 &arbitrator,
                             )
@@ -101,13 +144,60 @@ impl MavlinkManager {
         }
     }
 
-    /// Handle incoming MAVLink message
+    /// Broadcast `HEARTBEAT` at 1 Hz to every recorded peer.
+    async fn heartbeat_loop(
+        socket: Arc<UdpSocket>,
+        peers: Peers,
+        seq: Arc<AtomicU8>,
+        config: MavlinkConfig,
+    ) {
+        let mut interval = time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+
+            let hb = HEARTBEAT_DATA {
+                custom_mode: 0,
+                mavtype: MavType::MAV_TYPE_GIMBAL,
+                autopilot: MavAutopilot::MAV_AUTOPILOT_INVALID,
+                base_mode: MavModeFlag::empty(),
+                system_status: MavState::MAV_STATE_ACTIVE,
+                mavlink_version: 3,
+            };
+            let msg = MavMessage::HEARTBEAT(hb);
+
+            let targets: Vec<SocketAddr> = peers.lock().await.iter().copied().collect();
+            if targets.is_empty() {
+                continue;
+            }
+            for peer in targets {
+                if let Err(e) = Self::send_mavlink_message(
+                    &socket,
+                    peer,
+                    config.sysid,
+                    config.compid,
+                    &seq,
+                    msg.clone(),
+                )
+                .await
+                {
+                    warn!("HEARTBEAT to {} failed: {}", peer, e);
+                }
+            }
+        }
+    }
+
+    /// Handle incoming MAVLink message.
+    ///
+    /// TODO(item-5): collapse `socket` / `seq` / `config` into a send context
+    /// when `COMMAND_LONG` dispatch + primary-client tracking lands.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_mavlink_message(
         sender_sysid: u8,
         msg: MavMessage,
         socket: &Arc<UdpSocket>,
         src_addr: std::net::SocketAddr,
         config: &MavlinkConfig,
+        seq: &Arc<AtomicU8>,
         gimbal: &Arc<Mutex<Box<dyn GimbalDevice>>>,
         arbitrator: &Arbitrator,
     ) {
@@ -211,7 +301,7 @@ impl MavlinkManager {
                 debug!("Received GIMBAL_MANAGER_INFORMATION request");
 
                 // Send GIMBAL_MANAGER_INFORMATION response
-                Self::send_gimbal_manager_information(socket, src_addr, config).await;
+                Self::send_gimbal_manager_information(socket, src_addr, config, seq).await;
             }
 
             _ => {
@@ -221,18 +311,53 @@ impl MavlinkManager {
         }
     }
 
-    /// Publish GIMBAL_MANAGER_STATUS at 5Hz
+    /// Broadcast `GIMBAL_MANAGER_STATUS` at 5 Hz to every recorded peer.
+    ///
+    /// Primary / secondary control fields are currently zero — real
+    /// primary-client tracking lands with the `COMMAND_LONG` / `_CONFIGURE`
+    /// dispatch work (roadmap item 5).
     async fn publish_status_loop(
-        _socket: Arc<UdpSocket>,
-        state_manager: StateManager,
-        _config: MavlinkConfig,
+        socket: Arc<UdpSocket>,
+        peers: Peers,
+        seq: Arc<AtomicU8>,
+        _state_manager: StateManager,
+        config: MavlinkConfig,
+        start_time: Instant,
     ) {
-        let mut interval = time::interval(Duration::from_millis(200)); // 5Hz
+        let mut interval = time::interval(Duration::from_millis(200)); // 5 Hz
 
         loop {
             interval.tick().await;
-            let _state = state_manager.get_state();
-            // TODO: Send GIMBAL_MANAGER_STATUS to known clients
+
+            let status = GIMBAL_MANAGER_STATUS_DATA {
+                time_boot_ms: start_time.elapsed().as_millis() as u32,
+                flags: GimbalManagerFlags::default(),
+                gimbal_device_id: config.compid,
+                primary_control_sysid: 0,
+                primary_control_compid: 0,
+                secondary_control_sysid: 0,
+                secondary_control_compid: 0,
+            };
+            let msg = MavMessage::GIMBAL_MANAGER_STATUS(status);
+
+            let targets: Vec<SocketAddr> = peers.lock().await.iter().copied().collect();
+            if targets.is_empty() {
+                continue;
+            }
+            for peer in targets {
+                if let Err(e) = Self::send_mavlink_message(
+                    &socket,
+                    peer,
+                    config.sysid,
+                    config.compid,
+                    &seq,
+                    msg.clone(),
+                )
+                .await
+                {
+                    warn!("GIMBAL_MANAGER_STATUS to {} failed: {}", peer, e);
+                }
+            }
         }
     }
 
@@ -241,6 +366,7 @@ impl MavlinkManager {
         socket: &Arc<UdpSocket>,
         dest_addr: std::net::SocketAddr,
         config: &MavlinkConfig,
+        seq: &Arc<AtomicU8>,
     ) {
         // Based on mavlink 0.13 schema for GIMBAL_MANAGER_INFORMATION
         let info = mavlink::ardupilotmega::GIMBAL_MANAGER_INFORMATION_DATA {
@@ -257,7 +383,8 @@ impl MavlinkManager {
 
         let msg = MavMessage::GIMBAL_MANAGER_INFORMATION(info);
 
-        match Self::send_mavlink_message(socket, dest_addr, config.sysid, config.compid, msg).await
+        match Self::send_mavlink_message(socket, dest_addr, config.sysid, config.compid, seq, msg)
+            .await
         {
             Ok(_) => debug!("Sent GIMBAL_MANAGER_INFORMATION"),
             Err(e) => error!("Failed to send GIMBAL_MANAGER_INFORMATION: {}", e),
@@ -270,12 +397,16 @@ impl MavlinkManager {
         dest_addr: std::net::SocketAddr,
         sysid: u8,
         compid: u8,
+        seq: &Arc<AtomicU8>,
         msg: MavMessage,
     ) -> crate::error::Result<()> {
         let header = mavlink::MavHeader {
             system_id: sysid,
             component_id: compid,
-            sequence: 0, // TODO: Track sequence numbers
+            // MAVLink sequence is an 8-bit counter that wraps; overflow panics
+            // in debug builds without wrapping_add, so use fetch_add (already
+            // wrapping) and take the post-increment value.
+            sequence: seq.fetch_add(1, Ordering::Relaxed),
         };
 
         let mut buf = Vec::new();
