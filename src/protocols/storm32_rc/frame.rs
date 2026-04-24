@@ -1,7 +1,7 @@
 //! STorM32 RC protocol frame format, CRC, and payload builders.
 
 use super::error::{Result, Storm32Error};
-use log::{debug, trace};
+use tracing::{debug, trace};
 
 /// Start sign for frames we send to the gimbal (`0xFA`).
 const RC_START_SIGN_IN: u8 = 0xFA;

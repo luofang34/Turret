@@ -2,7 +2,8 @@
 
 use anyhow::{anyhow, Result};
 use clap::{Arg, Command};
-use log::{debug, error, info, LevelFilter};
+use tracing::{debug, error, info};
+use tracing_subscriber::filter::LevelFilter;
 
 use turret::daemon;
 use turret::device_scanner::DeviceScanner;
@@ -165,18 +166,21 @@ async fn main() -> Result<()> {
         )
         .get_matches();
 
-    // Initialize logger based on verbosity
+    // Verbosity: -v / -vv / -vvv picks the global level floor, RUST_LOG
+    // env var can further tune per-target filters.
     let verbose_count = matches.get_count("verbose");
-    let log_level = match verbose_count {
-        0 => LevelFilter::Warn,
-        1 => LevelFilter::Info,
-        2 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
+    let default_level = match verbose_count {
+        0 => LevelFilter::WARN,
+        1 => LevelFilter::INFO,
+        2 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
     };
+    let env_filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(default_level.into())
+        .with_env_var("RUST_LOG")
+        .from_env_lossy();
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
-        .filter_level(log_level)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     // Check if running in daemon mode
     if matches.get_flag("daemon") {

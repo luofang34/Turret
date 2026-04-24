@@ -136,7 +136,7 @@ pub trait GimbalProtocol: Send {
 /// Prefer [`crate::detect_gimbal`] for most use cases; this helper only
 /// returns the protocol tag, not a usable device handle.
 pub async fn detect_protocol(device_path: &str) -> Result<ProtocolType> {
-    log::debug!(
+    tracing::debug!(
         "Attempting STorM32 RC protocol detection on {}",
         device_path
     );

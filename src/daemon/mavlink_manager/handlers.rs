@@ -10,7 +10,6 @@ use super::{Peers, RxCtx};
 use crate::daemon::config::{GimbalLimits, MavlinkConfig};
 use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
 use crate::daemon::state::StateManager;
-use log::{debug, error, info, warn};
 use mavlink::ardupilotmega::{
     GimbalManagerFlags, MavAutopilot, MavCmd, MavMessage, MavModeFlag, MavResult, MavState,
     MavType, COMMAND_ACK_DATA, COMMAND_LONG_DATA, GIMBAL_MANAGER_STATUS_DATA, HEARTBEAT_DATA,
@@ -21,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::time;
+use tracing::{debug, error, info, warn};
 
 /// Broadcast `HEARTBEAT` at 1 Hz to every recorded peer.
 pub(super) async fn heartbeat_loop(
@@ -111,6 +111,7 @@ pub(super) async fn publish_status_loop(
 }
 
 /// Dispatch a parsed inbound `MavMessage` to a per-type handler.
+#[tracing::instrument(level = "debug", skip(msg, ctx))]
 pub(super) async fn handle_mavlink_message(
     sender_sysid: u8,
     sender_compid: u8,

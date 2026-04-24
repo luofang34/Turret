@@ -1,7 +1,7 @@
 use super::models::{CommandMode, GimbalCommand};
 use super::state::StateManager;
 use crate::gimbal::GimbalDevice;
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 
 /// Command arbitrator that executes commands on the gimbal hardware
 pub struct Arbitrator {
@@ -15,6 +15,11 @@ impl Arbitrator {
 
     /// Process and execute a gimbal command
     /// Returns true if command was accepted and executed
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, gimbal),
+        fields(source = ?command.source, mode = ?command.mode)
+    )]
     pub fn process_command(
         &self,
         command: GimbalCommand,
