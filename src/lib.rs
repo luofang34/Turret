@@ -27,6 +27,15 @@
 
 #![forbid(unsafe_code)]
 #![deny(clippy::disallowed_types)]
+// CLAUDE.md: library code is never allowed to crash the process via
+// unwrap/expect/panic. Tests opt out locally with #[allow(...)] on
+// each `mod tests` block.
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+#![deny(clippy::panic)]
+#![deny(clippy::await_holding_lock)]
+#![deny(clippy::let_underscore_must_use)]
+#![deny(clippy::let_underscore_future)]
 
 pub mod daemon;
 pub mod device_scanner;

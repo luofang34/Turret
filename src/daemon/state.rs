@@ -1,7 +1,11 @@
 use super::models::{GimbalCommand, GimbalState, PrimaryControl};
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
-/// Thread-safe gimbal state manager
+/// Thread-safe gimbal state manager.
+///
+/// Uses `parking_lot::RwLock` (not `std::sync::RwLock`) so a panicking
+/// writer can never poison the lock and bring the daemon down with it.
 #[derive(Clone)]
 pub struct StateManager {
     state: Arc<RwLock<GimbalState>>,
@@ -20,42 +24,42 @@ impl StateManager {
 
     /// Get current gimbal state (blocking read)
     pub fn get_state(&self) -> GimbalState {
-        self.state.read().unwrap().clone()
+        self.state.read().clone()
     }
 
     /// Update gimbal angles
     pub fn update_angles(&self, yaw: f32, pitch: f32, roll: f32) {
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write();
         state.update_angles(yaw, pitch, roll);
     }
 
     /// Update pan mode
     pub fn update_pan_mode(&self, mode: super::models::PanMode) {
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write();
         state.update_pan_mode(mode);
     }
 
     /// Update standby state
     pub fn update_standby(&self, standby: bool) {
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write();
         state.update_standby(standby);
     }
 
     /// Update firmware version
     pub fn update_firmware_version(&self, version: String) {
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write();
         state.firmware_version = Some(version);
     }
 
     /// Get last command
     pub fn get_last_command(&self) -> Option<GimbalCommand> {
-        self.last_command.read().unwrap().clone()
+        self.last_command.read().clone()
     }
 
     /// Set last command (with arbitration check)
     /// Returns true if command was accepted (higher or equal priority)
     pub fn set_command(&self, command: GimbalCommand) -> bool {
-        let mut last_cmd = self.last_command.write().unwrap();
+        let mut last_cmd = self.last_command.write();
 
         // Check if new command has higher priority than current
         let should_accept = match &*last_cmd {
@@ -87,12 +91,12 @@ impl StateManager {
 
     /// Current primary/secondary control ownership.
     pub fn get_primary_control(&self) -> PrimaryControl {
-        *self.primary_control.read().unwrap()
+        *self.primary_control.read()
     }
 
     /// Set primary + secondary control. All-zero means "unset / open".
     pub fn set_primary_control(&self, pc: PrimaryControl) {
-        *self.primary_control.write().unwrap() = pc;
+        *self.primary_control.write() = pc;
     }
 
     /// True if `(sysid, compid)` is authorized to drive the gimbal under the
@@ -103,7 +107,7 @@ impl StateManager {
 
     /// Clear stale commands
     pub fn clear_stale_commands(&self) {
-        let mut last_cmd = self.last_command.write().unwrap();
+        let mut last_cmd = self.last_command.write();
         if let Some(ref cmd) = *last_cmd {
             if cmd.is_stale() {
                 *last_cmd = None;
@@ -119,6 +123,7 @@ impl Default for StateManager {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
