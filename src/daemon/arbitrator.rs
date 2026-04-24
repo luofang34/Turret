@@ -43,7 +43,10 @@ impl Arbitrator {
                 let pitch = command.pitch.unwrap_or(0.0);
                 let roll = command.roll.unwrap_or(0.0);
 
-                debug!("Executing position command: yaw={:.1}, pitch={:.1}, roll={:.1}", yaw, pitch, roll);
+                debug!(
+                    "Executing position command: yaw={:.1}, pitch={:.1}, roll={:.1}",
+                    yaw, pitch, roll
+                );
                 gimbal.set_attitude(pitch, roll, yaw)?;
 
                 // Update state
@@ -73,6 +76,7 @@ impl Arbitrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand};
     use crate::gimbal::Attitude;
 
     struct MockGimbal {
@@ -92,12 +96,12 @@ mod tests {
             "Mock"
         }
 
-        fn set_attitude(&mut self, pitch: f32, roll: f32, yaw: f32) -> anyhow::Result<()> {
+        fn set_attitude(&mut self, pitch: f32, roll: f32, yaw: f32) -> crate::error::Result<()> {
             self.last_attitude = Some((pitch, roll, yaw));
             Ok(())
         }
 
-        fn get_attitude(&mut self) -> anyhow::Result<Attitude> {
+        fn get_attitude(&mut self) -> crate::error::Result<Attitude> {
             Ok(Attitude {
                 pitch: 0.0,
                 roll: 0.0,

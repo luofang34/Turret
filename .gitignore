@@ -1,7 +1,6 @@
 /target
 .DS_Store
 /.claude
-Cargo.lock
 CLAUDE.md
 FIXME.md
 REFACTORING_PLAN.md

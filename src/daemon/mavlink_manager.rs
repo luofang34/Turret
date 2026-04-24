@@ -131,8 +131,11 @@ impl MavlinkManager {
                 );
 
                 let mut gimbal_guard = gimbal.lock().await;
-                match arbitrator.process_command(command, &mut *gimbal_guard) {
-                    Ok(true) => info!("Executed MAVLink attitude command from sysid {}", sender_sysid),
+                match arbitrator.process_command(command, &mut gimbal_guard) {
+                    Ok(true) => info!(
+                        "Executed MAVLink attitude command from sysid {}",
+                        sender_sysid
+                    ),
                     Ok(false) => warn!("MAVLink command rejected (lower priority)"),
                     Err(e) => error!("Failed to execute MAVLink command: {}", e),
                 }
@@ -159,15 +162,21 @@ impl MavlinkManager {
                 );
 
                 let mut gimbal_guard = gimbal.lock().await;
-                match arbitrator.process_command(command, &mut *gimbal_guard) {
-                    Ok(true) => info!("Executed MAVLink pitch/yaw command from sysid {}", sender_sysid),
+                match arbitrator.process_command(command, &mut gimbal_guard) {
+                    Ok(true) => info!(
+                        "Executed MAVLink pitch/yaw command from sysid {}",
+                        sender_sysid
+                    ),
                     Ok(false) => warn!("MAVLink command rejected (lower priority)"),
                     Err(e) => error!("Failed to execute MAVLink command: {}", e),
                 }
             }
 
             MavMessage::GIMBAL_MANAGER_SET_MANUAL_CONTROL(set_manual) => {
-                debug!("Received GIMBAL_MANAGER_SET_MANUAL_CONTROL: {:?}", set_manual);
+                debug!(
+                    "Received GIMBAL_MANAGER_SET_MANUAL_CONTROL: {:?}",
+                    set_manual
+                );
 
                 // Check if message is for us
                 if set_manual.target_system != 0 && set_manual.target_system != config.sysid {
@@ -188,8 +197,11 @@ impl MavlinkManager {
                 );
 
                 let mut gimbal_guard = gimbal.lock().await;
-                match arbitrator.process_command(command, &mut *gimbal_guard) {
-                    Ok(true) => debug!("Executed MAVLink manual control from sysid {}", sender_sysid),
+                match arbitrator.process_command(command, &mut gimbal_guard) {
+                    Ok(true) => debug!(
+                        "Executed MAVLink manual control from sysid {}",
+                        sender_sysid
+                    ),
                     Ok(false) => debug!("MAVLink manual control rejected (lower priority)"),
                     Err(e) => error!("Failed to execute MAVLink manual control: {}", e),
                 }
@@ -245,7 +257,8 @@ impl MavlinkManager {
 
         let msg = MavMessage::GIMBAL_MANAGER_INFORMATION(info);
 
-        match Self::send_mavlink_message(socket, dest_addr, config.sysid, config.compid, msg).await {
+        match Self::send_mavlink_message(socket, dest_addr, config.sysid, config.compid, msg).await
+        {
             Ok(_) => debug!("Sent GIMBAL_MANAGER_INFORMATION"),
             Err(e) => error!("Failed to send GIMBAL_MANAGER_INFORMATION: {}", e),
         }

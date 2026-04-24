@@ -58,7 +58,7 @@ impl DeviceScanner {
         }
         None
     }
-    
+
     async fn find_via_serialport(&self) -> Option<GimbalDevice> {
         match serialport::available_ports() {
             Ok(ports) => {
@@ -105,7 +105,7 @@ impl DeviceScanner {
         }
         None
     }
-    
+
     /// Check if a port might be a gimbal device (broader check)
     fn is_potential_gimbal_device(&self, port_info: &SerialPortInfo) -> bool {
         match &port_info.port_type {
@@ -144,10 +144,10 @@ impl DeviceScanner {
     fn matches_gimbal_device_pattern(&self, port_name: &str) -> bool {
         let port_lower = port_name.to_lowercase();
         // Common patterns for serial devices that might be gimbals
-        port_lower.contains("ttyacm") ||
-        port_lower.contains("ttyusb") ||
-        port_lower.contains("usbmodem") ||
-        port_lower.starts_with("com")
+        port_lower.contains("ttyacm")
+            || port_lower.contains("ttyusb")
+            || port_lower.contains("usbmodem")
+            || port_lower.starts_with("com")
     }
 
     fn is_storm32_device(&self, port_info: &SerialPortInfo) -> bool {
@@ -162,7 +162,7 @@ impl DeviceScanner {
             _ => false,
         }
     }
-    
+
     #[cfg(target_os = "macos")]
     async fn find_via_system_info(&self) -> Option<GimbalDevice> {
         let patterns = ["/dev/tty.usbmodem*", "/dev/tty.SLAB_USBtoUART*"];
@@ -209,7 +209,7 @@ impl DeviceScanner {
 
         None
     }
-    
+
     #[cfg(target_os = "linux")]
     async fn find_via_system_info(&self) -> Option<GimbalDevice> {
         let patterns = ["/dev/ttyACM*", "/dev/ttyUSB*"];
@@ -260,7 +260,7 @@ impl DeviceScanner {
 
         None
     }
-    
+
     #[cfg(target_os = "windows")]
     async fn find_via_system_info(&self) -> Option<GimbalDevice> {
         // On Windows, try common COM ports
@@ -292,7 +292,7 @@ impl DeviceScanner {
         }
         None
     }
-    
+
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     async fn find_via_system_info(&self) -> Option<GimbalDevice> {
         // Fallback for other platforms
@@ -304,14 +304,13 @@ impl DeviceScanner {
         // Fallback for other platforms
         None
     }
-    
+
     // Helper function to expand glob patterns
     fn glob_devices(&self, pattern: &str) -> Result<Vec<String>, std::io::Error> {
         let mut devices = Vec::new();
-        
+
         // Simple glob expansion for basic patterns like /dev/tty*
-        if pattern.ends_with('*') {
-            let prefix = &pattern[..pattern.len() - 1];
+        if let Some(prefix) = pattern.strip_suffix('*') {
             if let Some(dir) = std::path::Path::new(prefix).parent() {
                 if let Ok(entries) = fs::read_dir(dir) {
                     for entry in entries.flatten() {
@@ -330,18 +329,18 @@ impl DeviceScanner {
                 devices.push(pattern.to_string());
             }
         }
-        
+
         devices.sort();
         Ok(devices)
     }
-    
+
     #[cfg(target_os = "macos")]
     fn verify_device_macos(&self, device_path: &str) -> bool {
         // On macOS, we can check USB device info using system_profiler
         // For now, just check if the device is accessible
         self.test_device_exists(device_path)
     }
-    
+
     #[cfg(target_os = "linux")]
     fn verify_device_linux(&self, device_path: &str) -> bool {
         // On Linux, we can check udev info or sysfs
@@ -349,7 +348,7 @@ impl DeviceScanner {
         if !self.test_device_exists(device_path) {
             return false;
         }
-        
+
         // Try to get USB device info from sysfs
         if let Some(usb_path) = self.get_usb_sysfs_path(device_path) {
             if let Ok(vendor) = fs::read_to_string(format!("{}/idVendor", usb_path)) {
@@ -361,18 +360,16 @@ impl DeviceScanner {
                 }
             }
         }
-        
+
         // Fallback: assume it might be correct
         true
     }
-    
+
     #[cfg(target_os = "linux")]
     fn get_usb_sysfs_path(&self, device_path: &str) -> Option<String> {
         // Extract device info from /sys/class/tty/*/device/
-        let device_name = std::path::Path::new(device_path)
-            .file_name()?
-            .to_str()?;
-        
+        let device_name = std::path::Path::new(device_path).file_name()?.to_str()?;
+
         let sys_path = format!("/sys/class/tty/{}/device", device_name);
         if std::path::Path::new(&sys_path).exists() {
             // Follow symlinks to find the USB device
@@ -396,14 +393,14 @@ impl DeviceScanner {
                 }
             }
         }
-        
+
         None
     }
-    
+
     fn test_device_exists(&self, device_path: &str) -> bool {
         std::path::Path::new(device_path).exists()
     }
-    
+
     pub fn list_all_devices(&self) -> Vec<SerialPortInfo> {
         serialport::available_ports().unwrap_or_default()
     }

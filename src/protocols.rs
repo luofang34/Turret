@@ -7,17 +7,12 @@ use std::fmt;
 #[path = "protocols/storm32_rc.rs"]
 pub mod storm32_rc;
 
-// MAVLink modules (if available)
-#[cfg(feature = "mavlink")]
-#[path = "protocols/mavlink.rs"]
-pub mod mavlink;
-
 /// Protocol type enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProtocolType {
     Storm32Rc,
     Mavlink,
-    Auto,  // Auto-detect
+    Auto, // Auto-detect
 }
 
 impl fmt::Display for ProtocolType {
@@ -139,16 +134,11 @@ pub trait GimbalProtocol: Send {
 pub async fn detect_protocol(device_path: &str) -> Result<ProtocolType> {
     use log::debug;
 
-    // Try MAVLink detection first (if feature is enabled)
-    #[cfg(feature = "mavlink")]
-    {
-        debug!("Attempting MAVLink protocol detection on {}", device_path);
-        // TODO: Implement actual MAVLink detection
-        // For now, skip MAVLink detection
-    }
-
     // Try Storm32 RC protocol
-    debug!("Attempting STorM32 RC protocol detection on {}", device_path);
+    debug!(
+        "Attempting STorM32 RC protocol detection on {}",
+        device_path
+    );
     if storm32_rc::Storm32RC::try_detect(device_path).is_ok() {
         return Ok(ProtocolType::Storm32Rc);
     }
@@ -168,7 +158,9 @@ pub async fn create_protocol(
 ) -> Result<Box<dyn GimbalProtocol>> {
     // TODO: Implement this when daemon module is fully integrated
     // For now, this is a placeholder
-    Err(anyhow::anyhow!("Protocol creation not yet implemented. Use gimbal::detect_gimbal() for CLI mode"))
+    Err(anyhow::anyhow!(
+        "Protocol creation not yet implemented. Use gimbal::detect_gimbal() for CLI mode"
+    ))
 }
 
 // Note: Storm32RcAsync wrapper is not included here to avoid Sync issues

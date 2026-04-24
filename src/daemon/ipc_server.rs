@@ -1,8 +1,6 @@
 use super::arbitrator::Arbitrator;
 use super::config::IpcConfig;
-use super::models::{
-    CommandMode, ControlSource, GimbalCommand, IpcCommand, IpcResponse, PanMode,
-};
+use super::models::{CommandMode, ControlSource, GimbalCommand, IpcCommand, IpcResponse, PanMode};
 use super::state::StateManager;
 use crate::gimbal::GimbalDevice;
 use crate::protocols::storm32_rc::Storm32RC;
@@ -66,9 +64,14 @@ impl IpcServer {
                     let gimbal = self.gimbal.clone();
 
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            Self::handle_client(client_id, stream, state_manager, arbitrator, gimbal)
-                                .await
+                        if let Err(e) = Self::handle_client(
+                            client_id,
+                            stream,
+                            state_manager,
+                            arbitrator,
+                            gimbal,
+                        )
+                        .await
                         {
                             error!("Client {} error: {}", client_id, e);
                         }
@@ -157,7 +160,7 @@ impl IpcServer {
                 );
 
                 let mut gimbal_guard = gimbal.lock().await;
-                match arbitrator.process_command(gimbal_cmd, &mut *gimbal_guard) {
+                match arbitrator.process_command(gimbal_cmd, &mut gimbal_guard) {
                     Ok(true) => IpcResponse::ok(),
                     Ok(false) => IpcResponse::error("Command rejected (lower priority)"),
                     Err(e) => IpcResponse::error(format!("Failed to set angles: {}", e)),
@@ -174,7 +177,7 @@ impl IpcServer {
                 );
 
                 let mut gimbal_guard = gimbal.lock().await;
-                match arbitrator.process_command(gimbal_cmd, &mut *gimbal_guard) {
+                match arbitrator.process_command(gimbal_cmd, &mut gimbal_guard) {
                     Ok(true) => IpcResponse::ok(),
                     Ok(false) => IpcResponse::error("Command rejected (lower priority)"),
                     Err(e) => IpcResponse::error(format!("Failed to center: {}", e)),
@@ -207,68 +210,81 @@ impl IpcServer {
 
             IpcCommand::VersionStr => {
                 let mut gimbal_guard = gimbal.lock().await;
-
-                // Downcast to Storm32RC to access version_string
-                let storm32_ptr = &mut **gimbal_guard as *mut dyn GimbalDevice as *mut Storm32RC;
-                let storm32 = unsafe { &mut *storm32_ptr };
-
-                match storm32.get_version_string() {
-                    Ok(version) => {
-                        let data = serde_json::json!({ "version_string": version });
-                        IpcResponse::ok_with_data(data)
+                if let Some(storm32) = gimbal_guard
+                    .as_any_mut()
+                    .and_then(|a| a.downcast_mut::<Storm32RC>())
+                {
+                    match storm32.get_version_string() {
+                        Ok(version) => {
+                            let data = serde_json::json!({ "version_string": version });
+                            IpcResponse::ok_with_data(data)
+                        }
+                        Err(e) => {
+                            IpcResponse::error(format!("Failed to get version string: {}", e))
+                        }
                     }
-                    Err(e) => IpcResponse::error(format!("Failed to get version string: {}", e)),
+                } else {
+                    IpcResponse::error("Command requires Storm32 device".to_string())
                 }
             }
 
             IpcCommand::Pitch { value } => {
                 let mut gimbal_guard = gimbal.lock().await;
-                let storm32_ptr = &mut **gimbal_guard as *mut dyn GimbalDevice as *mut Storm32RC;
-                let storm32 = unsafe { &mut *storm32_ptr };
-
-                let result = if value == 0 {
-                    storm32.recenter_pitch()
+                if let Some(storm32) = gimbal_guard
+                    .as_any_mut()
+                    .and_then(|a| a.downcast_mut::<Storm32RC>())
+                {
+                    let result = if value == 0 {
+                        storm32.recenter_pitch()
+                    } else {
+                        storm32.set_pitch(value)
+                    };
+                    match result {
+                        Ok(_) => IpcResponse::ok(),
+                        Err(e) => IpcResponse::error(format!("Failed to set pitch: {}", e)),
+                    }
                 } else {
-                    storm32.set_pitch(value)
-                };
-
-                match result {
-                    Ok(_) => IpcResponse::ok(),
-                    Err(e) => IpcResponse::error(format!("Failed to set pitch: {}", e)),
+                    IpcResponse::error("Command requires Storm32 device".to_string())
                 }
             }
 
             IpcCommand::Roll { value } => {
                 let mut gimbal_guard = gimbal.lock().await;
-                let storm32_ptr = &mut **gimbal_guard as *mut dyn GimbalDevice as *mut Storm32RC;
-                let storm32 = unsafe { &mut *storm32_ptr };
-
-                let result = if value == 0 {
-                    storm32.recenter_roll()
+                if let Some(storm32) = gimbal_guard
+                    .as_any_mut()
+                    .and_then(|a| a.downcast_mut::<Storm32RC>())
+                {
+                    let result = if value == 0 {
+                        storm32.recenter_roll()
+                    } else {
+                        storm32.set_roll(value)
+                    };
+                    match result {
+                        Ok(_) => IpcResponse::ok(),
+                        Err(e) => IpcResponse::error(format!("Failed to set roll: {}", e)),
+                    }
                 } else {
-                    storm32.set_roll(value)
-                };
-
-                match result {
-                    Ok(_) => IpcResponse::ok(),
-                    Err(e) => IpcResponse::error(format!("Failed to set roll: {}", e)),
+                    IpcResponse::error("Command requires Storm32 device".to_string())
                 }
             }
 
             IpcCommand::Yaw { value } => {
                 let mut gimbal_guard = gimbal.lock().await;
-                let storm32_ptr = &mut **gimbal_guard as *mut dyn GimbalDevice as *mut Storm32RC;
-                let storm32 = unsafe { &mut *storm32_ptr };
-
-                let result = if value == 0 {
-                    storm32.recenter_yaw()
+                if let Some(storm32) = gimbal_guard
+                    .as_any_mut()
+                    .and_then(|a| a.downcast_mut::<Storm32RC>())
+                {
+                    let result = if value == 0 {
+                        storm32.recenter_yaw()
+                    } else {
+                        storm32.set_yaw(value)
+                    };
+                    match result {
+                        Ok(_) => IpcResponse::ok(),
+                        Err(e) => IpcResponse::error(format!("Failed to set yaw: {}", e)),
+                    }
                 } else {
-                    storm32.set_yaw(value)
-                };
-
-                match result {
-                    Ok(_) => IpcResponse::ok(),
-                    Err(e) => IpcResponse::error(format!("Failed to set yaw: {}", e)),
+                    IpcResponse::error("Command requires Storm32 device".to_string())
                 }
             }
 
