@@ -2,11 +2,11 @@
 
 use super::error::{Result, Storm32Error};
 use super::frame::{RCCommand, RCMessage, RC_START_SIGN_OUT};
-use log::{debug, trace, warn};
 use serialport::SerialPort;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
+use tracing::{debug, trace, warn};
 
 /// Gimbal attitude reported by the STorM32 driver (Euler angles in degrees).
 #[derive(Debug, Clone, Copy)]
@@ -94,6 +94,7 @@ impl Storm32Gimbal {
     }
 
     // Send an RC command and read the framed response.
+    #[tracing::instrument(level = "trace", skip(self, message), fields(cmd = ?message.command))]
     fn send_rc_command(&mut self, message: &RCMessage) -> Result<Vec<u8>> {
         // Drop any stale input bytes so a previous incomplete response can't
         // poison this exchange.
@@ -399,11 +400,11 @@ impl Storm32RC {
         // Version probe confirms this is really a STorM32.
         match gimbal.get_version() {
             Ok(version) => {
-                log::info!("Detected STorM32 RC device: {}", version);
+                tracing::info!("Detected STorM32 RC device: {}", version);
                 Ok(gimbal)
             }
             Err(e) => {
-                log::debug!("STorM32 RC detection failed: {}", e);
+                tracing::debug!("STorM32 RC detection failed: {}", e);
                 Err(e.into())
             }
         }

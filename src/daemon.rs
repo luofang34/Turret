@@ -16,11 +16,11 @@ use crate::device_scanner::DeviceScanner;
 use crate::gimbal;
 use config::DaemonConfig;
 use ipc_server::IpcServer;
-use log::{error, info};
 use mavlink_manager::MavlinkManager;
 use state::StateManager;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::{error, info};
 
 /// Main daemon entry point
 pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()> {

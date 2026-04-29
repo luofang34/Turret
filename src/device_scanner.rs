@@ -1,6 +1,6 @@
-use log::{debug, info};
 use serialport::{SerialPortInfo, SerialPortType};
 use std::fs;
+use tracing::{debug, info};
 
 use crate::protocols::{detect_protocol, ProtocolType};
 

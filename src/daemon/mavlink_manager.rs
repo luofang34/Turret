@@ -12,7 +12,6 @@ use super::arbitrator::Arbitrator;
 use super::config::MavlinkConfig;
 use super::state::StateManager;
 use crate::gimbal::GimbalDevice;
-use log::{debug, error, info, warn};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU8;
@@ -20,6 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use tracing::{debug, error, info, warn};
 
 /// Peer set: every GCS (or autopilot) we've ever received a packet from.
 /// Heartbeats and `GIMBAL_MANAGER_STATUS` broadcasts go to every entry.

@@ -4,11 +4,11 @@ use super::models::{CommandMode, ControlSource, GimbalCommand, IpcCommand, IpcRe
 use super::state::StateManager;
 use crate::gimbal::GimbalDevice;
 use crate::protocols::storm32_rc::Storm32RC;
-use log::{debug, error, info};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
+use tracing::{debug, error, info};
 
 /// Unix socket IPC server for local clients
 pub struct IpcServer {

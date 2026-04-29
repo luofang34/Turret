@@ -1,6 +1,6 @@
 //! Stateless math helpers for the MAVLink manager.
 
-use log::warn;
+use tracing::warn;
 
 /// Clamp `value` to `[min, max]` and warn the operator if the original
 /// value was outside the range. `NaN` is left unchanged so that NaN-as-

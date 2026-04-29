@@ -127,7 +127,7 @@ impl DaemonConfig {
         match Self::load_from_file(path) {
             Ok(config) => config,
             Err(e) => {
-                log::warn!("Failed to load config file: {}. Using defaults.", e);
+                tracing::warn!("Failed to load config file: {}. Using defaults.", e);
                 Self::default()
             }
         }
