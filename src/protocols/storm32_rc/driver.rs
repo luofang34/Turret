@@ -284,30 +284,7 @@ impl Storm32Gimbal {
     }
 
     fn parse_data_fields_response(&mut self, response: &[u8]) -> Result<()> {
-        if response.len() < 7 {
-            return Err(Storm32Error::ProtocolError(format!(
-                "Data fields response too short: {} bytes",
-                response.len()
-            )));
-        }
-
-        // Response: [command_byte, bitmask_lo, bitmask_hi, data...]
-        let _bitmask = u16::from_le_bytes([response[1], response[2]]);
-
-        // For IMU1ANGLES (0x0020) we expect three i16 in 0.01° units. Only
-        // pitch+roll are present in the 4 data bytes; yaw defaults to 0.
-        if response.len() >= 7 {
-            let pitch_raw = i16::from_le_bytes([response[3], response[4]]);
-            let roll_raw = i16::from_le_bytes([response[5], response[6]]);
-            let yaw_raw = 0i16;
-
-            self.current_status.pv = GimbalAngles {
-                pitch: pitch_raw as f32 / 100.0,
-                roll: roll_raw as f32 / 100.0,
-                yaw: yaw_raw as f32 / 100.0,
-            };
-        }
-
+        self.current_status.pv = parse_imu1_angles_payload(response)?;
         Ok(())
     }
 
@@ -388,6 +365,31 @@ impl Storm32Gimbal {
     }
 }
 
+/// Decode a `CMD_GETDATAFIELDS` payload that was requested with bitmask
+/// `0x0020` (LIVEDATA_IMU1ANGLES).
+///
+/// `response` is the bytes returned by [`super::frame::RCMessage::parse_response`],
+/// i.e. the framing (start, length, command echo, CRC) is already stripped.
+/// Layout: `bitmask(2) + pitch_i16(2) + roll_i16(2) + yaw_i16(2)`, each axis
+/// in units of `0.01°`.
+fn parse_imu1_angles_payload(response: &[u8]) -> Result<GimbalAngles> {
+    if response.len() < 8 {
+        return Err(Storm32Error::ProtocolError(format!(
+            "IMU1ANGLES payload too short: got {} bytes, need 8 \
+             (bitmask + pitch + roll + yaw)",
+            response.len()
+        )));
+    }
+    let pitch_raw = i16::from_le_bytes([response[2], response[3]]);
+    let roll_raw = i16::from_le_bytes([response[4], response[5]]);
+    let yaw_raw = i16::from_le_bytes([response[6], response[7]]);
+    Ok(GimbalAngles {
+        pitch: f32::from(pitch_raw) / 100.0,
+        roll: f32::from(roll_raw) / 100.0,
+        yaw: f32::from(yaw_raw) / 100.0,
+    })
+}
+
 /// Type alias for callers that prefer "Storm32RC" over "Storm32Gimbal".
 pub type Storm32RC = Storm32Gimbal;
 
@@ -456,5 +458,40 @@ mod tests {
         assert!(Storm32Gimbal::validate_device_path("../etc/passwd").is_err());
         assert!(Storm32Gimbal::validate_device_path("/dev/../etc/passwd").is_err());
         assert!(Storm32Gimbal::validate_device_path("/dev/nonexistent123456").is_err());
+    }
+
+    fn build_imu1_payload(pitch_deg: f32, roll_deg: f32, yaw_deg: f32) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(8);
+        payload.extend_from_slice(&0x0020u16.to_le_bytes());
+        payload.extend_from_slice(&((pitch_deg * 100.0) as i16).to_le_bytes());
+        payload.extend_from_slice(&((roll_deg * 100.0) as i16).to_le_bytes());
+        payload.extend_from_slice(&((yaw_deg * 100.0) as i16).to_le_bytes());
+        payload
+    }
+
+    #[test]
+    fn parse_imu1_angles_round_trips_three_axes() {
+        let payload = build_imu1_payload(10.0, -5.0, 42.0);
+        let angles = parse_imu1_angles_payload(&payload).unwrap();
+        assert!((angles.pitch - 10.0).abs() < 0.01);
+        assert!((angles.roll - -5.0).abs() < 0.01);
+        assert!((angles.yaw - 42.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn parse_imu1_angles_handles_negative_yaw() {
+        let payload = build_imu1_payload(0.0, 0.0, -179.99);
+        let angles = parse_imu1_angles_payload(&payload).unwrap();
+        assert!((angles.yaw - -179.99).abs() < 0.01);
+    }
+
+    #[test]
+    fn parse_imu1_angles_rejects_short_payload() {
+        // Old (buggy) layout was 7 bytes; reject it explicitly so a
+        // regression to the off-by-one decode can't slip back in.
+        let short = vec![0u8; 7];
+        let err = parse_imu1_angles_payload(&short).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("IMU1ANGLES"), "unexpected error: {msg}");
     }
 }
