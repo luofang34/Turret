@@ -1,4 +1,13 @@
-#![allow(clippy::disallowed_types)]
+// Cargo.toml `[lints]` applies package-wide, including the bin target.
+// The library lint floor is correct for `src/`; main.rs is the CLI
+// entry point where panicking on a clap-guaranteed argument or
+// surfacing errors via `anyhow` is fine.
+#![allow(
+    clippy::disallowed_types,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use anyhow::{anyhow, Result};
 use clap::{Arg, Command};
