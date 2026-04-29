@@ -54,8 +54,10 @@ impl Arbitrator {
                 );
                 gimbal.set_attitude(pitch, roll, yaw)?;
 
-                // Update state
-                self.state_manager.update_angles(yaw, pitch, roll);
+                // Don't write commanded into state.{yaw,pitch,roll} — those are
+                // owned by the attitude poll loop and reflect the *measured*
+                // gimbal pose. Commanded values stay in `last_command` for any
+                // observer that needs the difference between target and pose.
             }
             CommandMode::Rate => {
                 // Angular velocity control (not yet implemented)
@@ -114,6 +116,20 @@ mod tests {
                 yaw: 0.0,
             })
         }
+
+        fn as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+    }
+
+    fn mock_attitude(g: &dyn GimbalDevice) -> Option<(f32, f32, f32)> {
+        g.as_any()
+            .and_then(|a| a.downcast_ref::<MockGimbal>())
+            .and_then(|m| m.last_attitude)
     }
 
     #[test]
@@ -134,11 +150,23 @@ mod tests {
         assert!(result.is_ok());
         assert!(result.unwrap());
 
-        // Verify state was updated
+        // Arbitrator forwards the commanded angles to the device …
+        assert_eq!(mock_attitude(&*gimbal), Some((20.0, 30.0, 10.0)));
+
+        // … and records them in last_command for primary-control / observability …
+        let last = state_manager.get_last_command().unwrap();
+        assert_eq!(last.yaw, Some(10.0));
+        assert_eq!(last.pitch, Some(20.0));
+        assert_eq!(last.roll, Some(30.0));
+
+        // … but does NOT touch state.{yaw,pitch,roll} — those are owned by
+        // the attitude poll loop and stay at their default zero until a
+        // poll succeeds.
         let state = state_manager.get_state();
-        assert_eq!(state.yaw, 10.0);
-        assert_eq!(state.pitch, 20.0);
-        assert_eq!(state.roll, 30.0);
+        assert_eq!(state.yaw, 0.0);
+        assert_eq!(state.pitch, 0.0);
+        assert_eq!(state.roll, 0.0);
+        assert!(state.measured_at.is_none());
     }
 
     #[test]
@@ -156,6 +184,7 @@ mod tests {
             Some(10.0),
         );
         assert!(arbitrator.process_command(cmd1, &mut gimbal).unwrap());
+        assert_eq!(mock_attitude(&*gimbal), Some((10.0, 10.0, 10.0)));
 
         // Low priority command should be rejected
         let cmd2 = GimbalCommand::new(
@@ -167,8 +196,9 @@ mod tests {
         );
         assert!(!arbitrator.process_command(cmd2, &mut gimbal).unwrap());
 
-        // State should still be from cmd1
-        let state = state_manager.get_state();
-        assert_eq!(state.yaw, 10.0);
+        // Mock gimbal still shows cmd1 — cmd2 was rejected before reaching it
+        assert_eq!(mock_attitude(&*gimbal), Some((10.0, 10.0, 10.0)));
+        let last = state_manager.get_last_command().unwrap();
+        assert_eq!(last.yaw, Some(10.0));
     }
 }

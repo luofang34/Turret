@@ -5,20 +5,25 @@
 //! parsed into a `MavMessage` or during the periodic broadcast loops. The
 //! parent module owns the socket / task lifecycle; this one is frame logic.
 
-use super::math::{clamp_axis, quaternion_wxyz_to_euler_deg, to_id_byte};
+use super::math::{
+    clamp_axis, euler_deg_to_quaternion_wxyz, quaternion_wxyz_to_euler_deg, to_id_byte,
+};
 use super::{Peers, RxCtx};
 use crate::daemon::config::{GimbalLimits, MavlinkConfig};
 use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
 use crate::daemon::state::StateManager;
+use crate::gimbal::{Attitude, GimbalDevice};
 use mavlink::ardupilotmega::{
-    GimbalManagerFlags, MavAutopilot, MavCmd, MavMessage, MavModeFlag, MavResult, MavState,
-    MavType, COMMAND_ACK_DATA, COMMAND_LONG_DATA, GIMBAL_MANAGER_STATUS_DATA, HEARTBEAT_DATA,
+    GimbalDeviceErrorFlags, GimbalDeviceFlags, GimbalManagerFlags, MavAutopilot, MavCmd,
+    MavMessage, MavModeFlag, MavResult, MavState, MavType, COMMAND_ACK_DATA, COMMAND_LONG_DATA,
+    GIMBAL_DEVICE_ATTITUDE_STATUS_DATA, GIMBAL_MANAGER_STATUS_DATA, HEARTBEAT_DATA,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
+use tokio::sync::Mutex;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
@@ -107,6 +112,119 @@ pub(super) async fn publish_status_loop(
                 warn!("GIMBAL_MANAGER_STATUS to {} failed: {}", peer, e);
             }
         }
+    }
+}
+
+/// Attitude poll + `GIMBAL_DEVICE_ATTITUDE_STATUS` broadcast loop.
+///
+/// Runs at a low fixed cadence (~4 Hz) and is the **only** writer of
+/// `state.{yaw,pitch,roll}` — see the comment in
+/// `Arbitrator::process_command` for why commanded values are deliberately
+/// not mirrored into state. On poll error we skip both the state update and
+/// the broadcast so consumers never see a stale-pretending-to-be-fresh
+/// value, and we count consecutive failures so a full unplug can be logged
+/// once instead of every tick.
+///
+/// `MissedTickBehavior::Skip` keeps the cadence honest if the gimbal mutex
+/// is held longer than the interval (e.g. a slow `set_attitude` queueing
+/// behind us) — we don't queue up backlogged ticks.
+pub(super) async fn attitude_loop(
+    socket: Arc<UdpSocket>,
+    peers: Peers,
+    seq: Arc<AtomicU8>,
+    state_manager: StateManager,
+    config: MavlinkConfig,
+    gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+    start_time: Instant,
+) {
+    let mut interval = time::interval(Duration::from_millis(250));
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    // We've waited 250ms for the first tick — fire immediately instead.
+    interval.tick().await;
+    let mut consecutive_failures: u32 = 0;
+
+    loop {
+        interval.tick().await;
+
+        let attitude = {
+            let mut g = gimbal.lock().await;
+            g.get_attitude()
+        };
+
+        let attitude = match attitude {
+            Ok(a) => {
+                if consecutive_failures > 0 {
+                    info!(
+                        "Attitude readback recovered after {} consecutive failures",
+                        consecutive_failures
+                    );
+                }
+                consecutive_failures = 0;
+                a
+            }
+            Err(e) => {
+                consecutive_failures = consecutive_failures.wrapping_add(1);
+                if consecutive_failures == 1 || consecutive_failures % 20 == 0 {
+                    warn!(
+                        "Attitude readback failed (#{}): {}",
+                        consecutive_failures, e
+                    );
+                }
+                continue;
+            }
+        };
+
+        state_manager.update_measured_angles(attitude.yaw, attitude.pitch, attitude.roll);
+
+        let msg = MavMessage::GIMBAL_DEVICE_ATTITUDE_STATUS(build_attitude_status_data(
+            &attitude, start_time,
+        ));
+
+        let targets: Vec<SocketAddr> = peers.lock().await.iter().copied().collect();
+        if targets.is_empty() {
+            continue;
+        }
+        for peer in targets {
+            if let Err(e) = send_mavlink_message(
+                &socket,
+                peer,
+                config.sysid,
+                config.compid,
+                &seq,
+                msg.clone(),
+            )
+            .await
+            {
+                warn!("GIMBAL_DEVICE_ATTITUDE_STATUS to {} failed: {}", peer, e);
+            }
+        }
+    }
+}
+
+/// Build a `GIMBAL_DEVICE_ATTITUDE_STATUS_DATA` from a measured attitude.
+///
+/// `target_system / target_component = 0` — the manager broadcasts this to
+/// every recorded peer, not to a single addressed system. `flags` is set
+/// to `YAW_IN_VEHICLE_FRAME` to be honest about what the manager actually
+/// supports today; earth-frame yaw needs vehicle-attitude integration that
+/// isn't wired up. `failure_flags = empty` until a health-monitoring path
+/// exists (consecutive read failures already stop the broadcast entirely,
+/// so we don't risk advertising a healthy device while it's offline).
+fn build_attitude_status_data(
+    attitude: &Attitude,
+    start_time: Instant,
+) -> GIMBAL_DEVICE_ATTITUDE_STATUS_DATA {
+    let q = euler_deg_to_quaternion_wxyz(attitude.pitch, attitude.roll, attitude.yaw);
+    GIMBAL_DEVICE_ATTITUDE_STATUS_DATA {
+        time_boot_ms: start_time.elapsed().as_millis() as u32,
+        target_system: 0,
+        target_component: 0,
+        flags: GimbalDeviceFlags::GIMBAL_DEVICE_FLAGS_YAW_IN_VEHICLE_FRAME,
+        q,
+        angular_velocity_x: f32::NAN,
+        angular_velocity_y: f32::NAN,
+        angular_velocity_z: f32::NAN,
+        failure_flags: GimbalDeviceErrorFlags::empty(),
     }
 }
 
@@ -485,5 +603,56 @@ mod tests {
         assert!(addressed_to_us(0, 1));
         assert!(addressed_to_us(42, 42));
         assert!(!addressed_to_us(42, 1));
+    }
+
+    fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() < eps
+    }
+
+    #[test]
+    fn build_attitude_status_round_trips_quaternion() {
+        let attitude = Attitude {
+            pitch: 12.0,
+            roll: -7.5,
+            yaw: 33.25,
+        };
+        let data = build_attitude_status_data(&attitude, Instant::now());
+
+        // Decoding the quaternion back must recover the input Euler angles.
+        // This catches both the math.rs helper and our use of it.
+        let (p, r, y) = quaternion_wxyz_to_euler_deg(data.q);
+        assert!(approx_eq(p, attitude.pitch, 1e-3), "pitch: got {p}");
+        assert!(approx_eq(r, attitude.roll, 1e-3), "roll: got {r}");
+        assert!(approx_eq(y, attitude.yaw, 1e-3), "yaw: got {y}");
+    }
+
+    #[test]
+    fn build_attitude_status_uses_broadcast_addressing_and_vehicle_frame() {
+        let data = build_attitude_status_data(
+            &Attitude {
+                pitch: 0.0,
+                roll: 0.0,
+                yaw: 0.0,
+            },
+            Instant::now(),
+        );
+
+        // Manager broadcasts to every peer, not a single addressed system.
+        assert_eq!(data.target_system, 0);
+        assert_eq!(data.target_component, 0);
+
+        // Honest about what we support: vehicle-frame yaw, no earth-frame
+        // tracking, no rate path.
+        assert!(data
+            .flags
+            .contains(GimbalDeviceFlags::GIMBAL_DEVICE_FLAGS_YAW_IN_VEHICLE_FRAME));
+        assert!(data.angular_velocity_x.is_nan());
+        assert!(data.angular_velocity_y.is_nan());
+        assert!(data.angular_velocity_z.is_nan());
+
+        // Without health monitoring we don't claim any failures — but the
+        // broadcast loop also stops emitting on consecutive read failures,
+        // so a healthy-looking message paired with a dead device can't go out.
+        assert!(data.failure_flags.is_empty());
     }
 }

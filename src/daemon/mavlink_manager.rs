@@ -116,6 +116,24 @@ impl MavlinkManager {
             });
         }
 
+        // 4 Hz attitude poll + GIMBAL_DEVICE_ATTITUDE_STATUS broadcast.
+        // This is the only writer of measured state.{yaw,pitch,roll} — see
+        // `Arbitrator::process_command` for why commanded values stay in
+        // `last_command` instead of overwriting the measured fields.
+        {
+            let socket = socket.clone();
+            let peers = self.peers.clone();
+            let seq = self.seq.clone();
+            let state = self.state_manager.clone();
+            let config = config.clone();
+            let gimbal = self.gimbal.clone();
+            let start_time = self.start_time;
+            tokio::spawn(async move {
+                handlers::attitude_loop(socket, peers, seq, state, config, gimbal, start_time)
+                    .await;
+            });
+        }
+
         // Main receive loop
         let mut buf = [0u8; 1024];
         let gimbal = self.gimbal.clone();
