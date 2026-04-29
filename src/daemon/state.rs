@@ -27,10 +27,13 @@ impl StateManager {
         self.state.read().clone()
     }
 
-    /// Update gimbal angles
-    pub fn update_angles(&self, yaw: f32, pitch: f32, roll: f32) {
+    /// Record a fresh attitude measurement from the device.
+    ///
+    /// Called by the attitude poll loop in `mavlink_manager`. The arbitrator
+    /// must not call this — it should only ever record `last_command`.
+    pub fn update_measured_angles(&self, yaw: f32, pitch: f32, roll: f32) {
         let mut state = self.state.write();
-        state.update_angles(yaw, pitch, roll);
+        state.update_measured_angles(yaw, pitch, roll);
     }
 
     /// Update pan mode
@@ -162,12 +165,15 @@ mod tests {
     #[test]
     fn test_state_update() {
         let manager = StateManager::new();
-        manager.update_angles(10.0, 20.0, 30.0);
+        assert!(manager.get_state().measured_at.is_none());
+
+        manager.update_measured_angles(10.0, 20.0, 30.0);
 
         let state = manager.get_state();
         assert_eq!(state.yaw, 10.0);
         assert_eq!(state.pitch, 20.0);
         assert_eq!(state.roll, 30.0);
+        assert!(state.measured_at.is_some());
     }
 
     #[test]

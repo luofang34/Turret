@@ -135,12 +135,22 @@ impl GimbalCommand {
     }
 }
 
-/// Current gimbal state
+/// Current gimbal state.
+///
+/// `yaw / pitch / roll` reflect the **measured** attitude polled from the
+/// hardware. They are written exclusively by the attitude poll loop in
+/// `mavlink_manager`; the arbitrator no longer copies commanded angles into
+/// these fields. `measured_at` distinguishes "no successful poll yet"
+/// (`None`, fields are still at their `Default::default()` zero) from
+/// "we measured this at time T" (`Some(t)`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GimbalState {
     pub yaw: f32,
     pub pitch: f32,
     pub roll: f32,
+    /// `Some(t)` once we've successfully read attitude from the device at
+    /// least once; `None` until then.
+    pub measured_at: Option<SystemTime>,
     pub pan_mode: PanMode,
     pub standby: bool,
     pub firmware_version: Option<String>,
@@ -153,6 +163,7 @@ impl Default for GimbalState {
             yaw: 0.0,
             pitch: 0.0,
             roll: 0.0,
+            measured_at: None,
             pan_mode: PanMode::Off,
             standby: false,
             firmware_version: None,
@@ -162,11 +173,14 @@ impl Default for GimbalState {
 }
 
 impl GimbalState {
-    pub fn update_angles(&mut self, yaw: f32, pitch: f32, roll: f32) {
+    /// Record a fresh attitude measurement read off the gimbal hardware.
+    pub fn update_measured_angles(&mut self, yaw: f32, pitch: f32, roll: f32) {
         self.yaw = yaw;
         self.pitch = pitch;
         self.roll = roll;
-        self.last_update = SystemTime::now();
+        let now = SystemTime::now();
+        self.measured_at = Some(now);
+        self.last_update = now;
     }
 
     pub fn update_pan_mode(&mut self, mode: PanMode) {

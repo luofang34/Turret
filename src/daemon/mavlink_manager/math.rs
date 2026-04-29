@@ -57,6 +57,32 @@ pub(super) fn quaternion_wxyz_to_euler_deg(q: [f32; 4]) -> (f32, f32, f32) {
     (pitch.to_degrees(), roll.to_degrees(), yaw.to_degrees())
 }
 
+/// Inverse of [`quaternion_wxyz_to_euler_deg`]: build a unit quaternion in
+/// MAVLink `[w, x, y, z]` order from aerospace Euler angles in degrees.
+///
+/// Useful for outbound `GIMBAL_DEVICE_ATTITUDE_STATUS` frames where the
+/// device gives us Euler angles but the wire format wants a quaternion.
+pub(super) fn euler_deg_to_quaternion_wxyz(
+    pitch_deg: f32,
+    roll_deg: f32,
+    yaw_deg: f32,
+) -> [f32; 4] {
+    let (hp, hr, hy) = (
+        pitch_deg.to_radians() / 2.0,
+        roll_deg.to_radians() / 2.0,
+        yaw_deg.to_radians() / 2.0,
+    );
+    let (cp, sp) = (hp.cos(), hp.sin());
+    let (cr, sr) = (hr.cos(), hr.sin());
+    let (cy, sy) = (hy.cos(), hy.sin());
+    [
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    ]
+}
+
 /// Convert a `COMMAND_LONG` param (`f32`) to a MAVLink sysid/compid byte.
 ///
 /// The MAVLink v2 spec reserves negative values (-3, -2, -1) for special
@@ -96,23 +122,6 @@ mod tests {
         assert_eq!(to_id_byte(f32::NEG_INFINITY), 0);
     }
 
-    fn quat_from_euler_deg(pitch_deg: f32, roll_deg: f32, yaw_deg: f32) -> [f32; 4] {
-        let (hp, hr, hy) = (
-            pitch_deg.to_radians() / 2.0,
-            roll_deg.to_radians() / 2.0,
-            yaw_deg.to_radians() / 2.0,
-        );
-        let (cp, sp) = (hp.cos(), hp.sin());
-        let (cr, sr) = (hr.cos(), hr.sin());
-        let (cy, sy) = (hy.cos(), hy.sin());
-        [
-            cr * cp * cy + sr * sp * sy,
-            sr * cp * cy - cr * sp * sy,
-            cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy,
-        ]
-    }
-
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps
     }
@@ -128,7 +137,7 @@ mod tests {
     #[test]
     fn quaternion_wxyz_roundtrips_per_axis() {
         for (p, r, y) in [(30.0, 0.0, 0.0), (0.0, 45.0, 0.0), (0.0, 0.0, 60.0)] {
-            let q = quat_from_euler_deg(p, r, y);
+            let q = euler_deg_to_quaternion_wxyz(p, r, y);
             let (pp, rr, yy) = quaternion_wxyz_to_euler_deg(q);
             assert!(approx_eq(pp, p, 1e-3), "pitch: got {}, want {}", pp, p);
             assert!(approx_eq(rr, r, 1e-3), "roll: got {}, want {}", rr, r);
@@ -141,7 +150,7 @@ mod tests {
         // Pure pitch of +90°. f32 rounding of sqrt(2)/2 leaves sinp just shy
         // of 1.0, so the explicit lock branch doesn't fire — but the regular
         // asin path still resolves to within 0.03° of the true value.
-        let q = quat_from_euler_deg(90.0, 0.0, 0.0);
+        let q = euler_deg_to_quaternion_wxyz(90.0, 0.0, 0.0);
         let (pitch, _roll, _yaw) = quaternion_wxyz_to_euler_deg(q);
         assert!(
             approx_eq(pitch, 90.0, 5e-2),
