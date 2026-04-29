@@ -37,6 +37,9 @@ pub(crate) struct RxCtx<'a> {
     pub state: &'a StateManager,
     pub arbitrator: &'a Arbitrator,
     pub gimbal: &'a Arc<Mutex<Box<dyn GimbalDevice>>>,
+    /// Daemon boot reference for `time_boot_ms` on on-demand frames built
+    /// inside per-message handlers (the periodic loops carry their own copy).
+    pub start_time: Instant,
 }
 
 /// MAVLink Gimbal Manager implementation.
@@ -142,6 +145,7 @@ impl MavlinkManager {
         let peers = self.peers.clone();
         let seq = self.seq.clone();
         let mavlink_config = config.clone();
+        let start_time = self.start_time;
 
         loop {
             match socket.recv_from(&mut buf).await {
@@ -162,6 +166,7 @@ impl MavlinkManager {
                                 state: &state,
                                 arbitrator: &arbitrator,
                                 gimbal: &gimbal,
+                                start_time,
                             };
                             handlers::handle_mavlink_message(
                                 header.system_id,
