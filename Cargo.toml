@@ -12,6 +12,15 @@ readme = "README.md"
 keywords = ["turret", "gimbal", "storm32", "mavlink", "serial"]
 categories = ["command-line-utilities", "hardware-support"]
 rust-version = "1.70"
+# Dev artifacts that have no business shipping in the crates.io tarball.
+# Source files that ARE compiled live under src/ and are included by default;
+# this list only filters auxiliary docs / scripts at the repo root.
+exclude = [
+    "REFACTORING_PLAN.md",
+    "test_daemon.sh",
+    "systemd/**",
+    ".github/**",
+]
 
 [features]
 # What ships by default — preserves the current binary behavior.
@@ -39,7 +48,6 @@ serialport = "4.5"
 thiserror = "2.0"
 tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
-async-trait = "0.1"
 
 # CLI-only.
 clap = { version = "4.0", features = ["derive"], optional = true }
