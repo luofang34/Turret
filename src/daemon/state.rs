@@ -114,16 +114,6 @@ impl StateManager {
     pub fn is_primary_allowed(&self, sysid: u8, compid: u8) -> bool {
         self.get_primary_control().is_allowed(sysid, compid)
     }
-
-    /// Clear stale commands
-    pub fn clear_stale_commands(&self) {
-        let mut last_cmd = self.last_command.write();
-        if let Some(ref cmd) = *last_cmd {
-            if cmd.is_stale() {
-                *last_cmd = None;
-            }
-        }
-    }
 }
 
 impl Default for StateManager {

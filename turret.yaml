@@ -20,15 +20,11 @@ mavlink:
   # Enable MAVLink Gimbal Manager protocol
   enabled: true
 
-  # Transport type: "udp" or "serial"
+  # Transport type. Currently only "udp" is implemented.
   transport: udp
 
-  # UDP port for MAVLink (used if transport is "udp")
-  # Default: 14550 (standard MAVLink port)
+  # UDP port for MAVLink. Default: 14550 (standard MAVLink port).
   udp_port: 14550
-
-  # Serial device for MAVLink (used if transport is "serial")
-  # serial_device: /dev/ttyUSB1
 
   # MAVLink system ID (1 = autopilot, 2+ = companion computer)
   sysid: 1

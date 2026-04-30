@@ -9,7 +9,7 @@ mod handlers;
 mod math;
 
 use super::arbitrator::Arbitrator;
-use super::config::MavlinkConfig;
+use super::config::{MavlinkConfig, Transport};
 use super::state::StateManager;
 use crate::gimbal::GimbalDevice;
 use std::collections::HashSet;
@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, Notify};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Peer set: every GCS (or autopilot) we've ever received a packet from.
 /// Heartbeats and `GIMBAL_MANAGER_STATUS` broadcasts go to every entry.
@@ -44,7 +44,6 @@ pub(crate) struct RxCtx<'a> {
 
 /// MAVLink Gimbal Manager implementation.
 pub struct MavlinkManager {
-    _config: MavlinkConfig,
     state_manager: StateManager,
     arbitrator: Arc<Arbitrator>,
     gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
@@ -64,7 +63,6 @@ impl MavlinkManager {
     /// failures cross the loop's failure threshold; the daemon-level
     /// `reconnect_task` drives recovery from there.
     pub fn new(
-        config: MavlinkConfig,
         state_manager: StateManager,
         gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
         notify_lost: Arc<Notify>,
@@ -72,7 +70,6 @@ impl MavlinkManager {
         let arbitrator = Arc::new(Arbitrator::new(state_manager.clone()));
 
         Self {
-            _config: config.clone(),
             state_manager,
             arbitrator,
             gimbal,
@@ -85,11 +82,8 @@ impl MavlinkManager {
 
     /// Start the MAVLink manager.
     pub async fn start(self, config: MavlinkConfig) -> crate::error::Result<()> {
-        if config.transport == "udp" {
-            self.start_udp(config).await
-        } else {
-            warn!("Serial transport not yet implemented for MAVLink");
-            Ok(())
+        match config.transport {
+            Transport::Udp => self.start_udp(config).await,
         }
     }
 
