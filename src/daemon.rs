@@ -101,9 +101,32 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
 
     info!("Daemon started successfully");
 
-    // Main loop - just keep alive and handle signals
-    tokio::signal::ctrl_c().await?;
-    info!("Received shutdown signal, exiting...");
+    let signal_name = wait_for_shutdown_signal().await?;
+    info!("Received {}, exiting...", signal_name);
 
     Ok(())
+}
+
+/// Block until SIGINT (`Ctrl-C`) or, on Unix, SIGTERM.
+///
+/// systemd / docker / k8s all send SIGTERM as the default stop signal;
+/// listening only for `ctrl_c` left every container or service-managed
+/// deployment relying on the kernel's "delivered SIGKILL after the grace
+/// period" fallback, which means in-flight serial I/O can't drain and the
+/// IPC socket file is left dangling on disk.
+async fn wait_for_shutdown_signal() -> crate::error::Result<&'static str> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => Ok("SIGINT"),
+            _ = sigterm.recv() => Ok("SIGTERM"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+        Ok("Ctrl-C")
+    }
 }

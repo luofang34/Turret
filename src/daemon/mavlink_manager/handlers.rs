@@ -82,17 +82,11 @@ pub(super) async fn publish_status_loop(
     loop {
         interval.tick().await;
 
-        let pc = state_manager.get_primary_control();
-        let status = GIMBAL_MANAGER_STATUS_DATA {
-            time_boot_ms: start_time.elapsed().as_millis() as u32,
-            flags: GimbalManagerFlags::default(),
-            gimbal_device_id: config.compid,
-            primary_control_sysid: pc.primary_sysid,
-            primary_control_compid: pc.primary_compid,
-            secondary_control_sysid: pc.secondary_sysid,
-            secondary_control_compid: pc.secondary_compid,
-        };
-        let msg = MavMessage::GIMBAL_MANAGER_STATUS(status);
+        let msg = MavMessage::GIMBAL_MANAGER_STATUS(build_gimbal_manager_status_data(
+            &state_manager,
+            &config,
+            start_time,
+        ));
 
         let targets: Vec<SocketAddr> = peers.lock().await.iter().copied().collect();
         if targets.is_empty() {
@@ -249,7 +243,14 @@ pub(super) async fn handle_mavlink_message(
         }
         MavMessage::GIMBAL_MANAGER_INFORMATION(_) => {
             debug!("Received GIMBAL_MANAGER_INFORMATION request");
-            send_gimbal_manager_information(ctx.socket, src_addr, ctx.config, ctx.seq).await;
+            send_gimbal_manager_information(
+                ctx.socket,
+                src_addr,
+                ctx.config,
+                ctx.seq,
+                ctx.start_time,
+            )
+            .await;
         }
         MavMessage::COMMAND_LONG(cmd) => {
             on_command_long(sender_sysid, sender_compid, src_addr, cmd, ctx).await;
@@ -265,7 +266,12 @@ async fn on_set_attitude(
     ctx: &RxCtx<'_>,
 ) {
     debug!("Received GIMBAL_MANAGER_SET_ATTITUDE: {:?}", m);
-    if !addressed_to_us(m.target_system, ctx.config.sysid) {
+    if !addressed_to_us(
+        m.target_system,
+        m.target_component,
+        ctx.config.sysid,
+        ctx.config.compid,
+    ) {
         return;
     }
     if !ctx.state.is_primary_allowed(sender_sysid, sender_compid) {
@@ -306,7 +312,12 @@ async fn on_set_pitchyaw(
     ctx: &RxCtx<'_>,
 ) {
     debug!("Received GIMBAL_MANAGER_SET_PITCHYAW: {:?}", m);
-    if !addressed_to_us(m.target_system, ctx.config.sysid) {
+    if !addressed_to_us(
+        m.target_system,
+        m.target_component,
+        ctx.config.sysid,
+        ctx.config.compid,
+    ) {
         return;
     }
     if !ctx.state.is_primary_allowed(sender_sysid, sender_compid) {
@@ -337,7 +348,12 @@ async fn on_set_manual(
     ctx: &RxCtx<'_>,
 ) {
     debug!("Received GIMBAL_MANAGER_SET_MANUAL_CONTROL: {:?}", m);
-    if !addressed_to_us(m.target_system, ctx.config.sysid) {
+    if !addressed_to_us(
+        m.target_system,
+        m.target_component,
+        ctx.config.sysid,
+        ctx.config.compid,
+    ) {
         return;
     }
     if !ctx.state.is_primary_allowed(sender_sysid, sender_compid) {
@@ -371,7 +387,12 @@ async fn on_command_long(
     cmd: COMMAND_LONG_DATA,
     ctx: &RxCtx<'_>,
 ) {
-    if !addressed_to_us(cmd.target_system, ctx.config.sysid) {
+    if !addressed_to_us(
+        cmd.target_system,
+        cmd.target_component,
+        ctx.config.sysid,
+        ctx.config.compid,
+    ) {
         return;
     }
     match cmd.command {
@@ -381,8 +402,81 @@ async fn on_command_long(
         MavCmd::MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE => {
             on_cmd_configure(src_addr, cmd, ctx).await;
         }
+        MavCmd::MAV_CMD_REQUEST_MESSAGE => {
+            on_cmd_request_message(src_addr, cmd, ctx).await;
+        }
         _ => debug!("Ignoring COMMAND_LONG: {:?}", cmd.command),
     }
+}
+
+/// Standard MAVLink message IDs the manager can serve on demand.
+///
+/// `GIMBAL_DEVICE_ATTITUDE_STATUS` (285) is intentionally not handled here:
+/// the 4 Hz attitude_loop already broadcasts it to every recorded peer, so
+/// any GCS that requests one will get the next periodic frame within
+/// 250 ms. Acknowledging the request without doing anything would be a lie;
+/// we'd rather fall through to `MAV_RESULT_DENIED` and let the GCS know to
+/// just listen.
+mod msg_id {
+    pub(super) const GIMBAL_MANAGER_INFORMATION: u32 = 280;
+    pub(super) const GIMBAL_MANAGER_STATUS: u32 = 281;
+}
+
+/// Convert a `COMMAND_LONG.param1` to a message id. NaN / negative / very
+/// large values collapse to `None` — the caller will deny the request.
+fn message_id_from_param(p: f32) -> Option<u32> {
+    if !p.is_finite() || p < 0.0 || p > u32::MAX as f32 {
+        return None;
+    }
+    Some(p.round() as u32)
+}
+
+async fn on_cmd_request_message(src_addr: SocketAddr, cmd: COMMAND_LONG_DATA, ctx: &RxCtx<'_>) {
+    let result = match message_id_from_param(cmd.param1) {
+        Some(msg_id::GIMBAL_MANAGER_INFORMATION) => {
+            send_gimbal_manager_information(
+                ctx.socket,
+                src_addr,
+                ctx.config,
+                ctx.seq,
+                ctx.start_time,
+            )
+            .await;
+            MavResult::MAV_RESULT_ACCEPTED
+        }
+        Some(msg_id::GIMBAL_MANAGER_STATUS) => {
+            let status = build_gimbal_manager_status_data(ctx.state, ctx.config, ctx.start_time);
+            let msg = MavMessage::GIMBAL_MANAGER_STATUS(status);
+            match send_mavlink_message(
+                ctx.socket,
+                src_addr,
+                ctx.config.sysid,
+                ctx.config.compid,
+                ctx.seq,
+                msg,
+            )
+            .await
+            {
+                Ok(()) => MavResult::MAV_RESULT_ACCEPTED,
+                Err(e) => {
+                    error!("Failed to send on-demand GIMBAL_MANAGER_STATUS: {}", e);
+                    MavResult::MAV_RESULT_FAILED
+                }
+            }
+        }
+        Some(other) => {
+            debug!("MAV_CMD_REQUEST_MESSAGE for unsupported id {}", other);
+            MavResult::MAV_RESULT_DENIED
+        }
+        None => {
+            debug!(
+                "MAV_CMD_REQUEST_MESSAGE with non-integer param1 {}",
+                cmd.param1
+            );
+            MavResult::MAV_RESULT_DENIED
+        }
+    };
+    send_command_ack(src_addr, ctx, MavCmd::MAV_CMD_REQUEST_MESSAGE, result).await;
 }
 
 async fn on_cmd_pitchyaw(
@@ -494,8 +588,38 @@ async fn dispatch_gimbal_command(command: GimbalCommand, ctx: &RxCtx<'_>, label:
     }
 }
 
-fn addressed_to_us(target_system: u8, our_sysid: u8) -> bool {
-    target_system == 0 || target_system == our_sysid
+/// True if a frame whose `target_system` / `target_component` we're looking
+/// at should be acted on by this manager.
+///
+/// Both axes obey the MAVLink "0 = broadcast, otherwise must match" rule.
+/// Without the component check the manager would happily execute commands
+/// addressed to the autopilot (compid 1) on the same vehicle, which is
+/// what the GMv2 spec is trying to prevent when multiple components share
+/// a sysid.
+fn addressed_to_us(target_system: u8, target_component: u8, our_sysid: u8, our_compid: u8) -> bool {
+    let sys_ok = target_system == 0 || target_system == our_sysid;
+    let comp_ok = target_component == 0 || target_component == our_compid;
+    sys_ok && comp_ok
+}
+
+/// Build a `GIMBAL_MANAGER_STATUS` frame from the current state. Used both
+/// by the 5 Hz publish loop and the on-demand `MAV_CMD_REQUEST_MESSAGE`
+/// responder.
+fn build_gimbal_manager_status_data(
+    state_manager: &StateManager,
+    config: &MavlinkConfig,
+    start_time: Instant,
+) -> GIMBAL_MANAGER_STATUS_DATA {
+    let pc = state_manager.get_primary_control();
+    GIMBAL_MANAGER_STATUS_DATA {
+        time_boot_ms: start_time.elapsed().as_millis() as u32,
+        flags: GimbalManagerFlags::default(),
+        gimbal_device_id: config.compid,
+        primary_control_sysid: pc.primary_sysid,
+        primary_control_compid: pc.primary_compid,
+        secondary_control_sysid: pc.secondary_sysid,
+        secondary_control_compid: pc.secondary_compid,
+    }
 }
 
 async fn send_gimbal_manager_information(
@@ -503,6 +627,7 @@ async fn send_gimbal_manager_information(
     dest_addr: SocketAddr,
     config: &MavlinkConfig,
     seq: &Arc<AtomicU8>,
+    start_time: Instant,
 ) {
     use mavlink::ardupilotmega::GimbalManagerCapFlags as Caps;
 
@@ -528,7 +653,7 @@ async fn send_gimbal_manager_information(
 
     let limits = &config.limits;
     let info = mavlink::ardupilotmega::GIMBAL_MANAGER_INFORMATION_DATA {
-        time_boot_ms: 0, // TODO: track uptime; needs start_time threaded here.
+        time_boot_ms: start_time.elapsed().as_millis() as u32,
         cap_flags,
         gimbal_device_id: config.compid,
         roll_min: limits.roll_min_deg.to_radians(),
@@ -599,10 +724,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn addressed_to_us_matches_broadcast_and_our_sysid() {
-        assert!(addressed_to_us(0, 1));
-        assert!(addressed_to_us(42, 42));
-        assert!(!addressed_to_us(42, 1));
+    fn addressed_to_us_accepts_per_axis_broadcast_and_exact_match() {
+        // Both axes broadcast.
+        assert!(addressed_to_us(0, 0, 1, 154));
+        // sysid broadcast, compid exact.
+        assert!(addressed_to_us(0, 154, 1, 154));
+        // sysid exact, compid broadcast.
+        assert!(addressed_to_us(1, 0, 1, 154));
+        // Both exact.
+        assert!(addressed_to_us(1, 154, 1, 154));
+    }
+
+    #[test]
+    fn addressed_to_us_rejects_other_components_on_same_sysid() {
+        // Targeting the autopilot (compid 1) on the same vehicle must NOT
+        // be acted on by the gimbal manager — same-sysid component routing
+        // is exactly what the compid axis is for.
+        assert!(!addressed_to_us(1, 1, 1, 154));
+    }
+
+    #[test]
+    fn addressed_to_us_rejects_other_systems() {
+        assert!(!addressed_to_us(2, 154, 1, 154));
+        assert!(!addressed_to_us(2, 0, 1, 154));
     }
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
