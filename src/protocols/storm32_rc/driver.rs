@@ -11,8 +11,11 @@ use tracing::{debug, trace, warn};
 /// Gimbal attitude reported by the STorM32 driver (Euler angles in degrees).
 #[derive(Debug, Clone, Copy)]
 pub struct GimbalAngles {
+    /// Pitch axis, in degrees.
     pub pitch: f32,
+    /// Roll axis, in degrees.
     pub roll: f32,
+    /// Yaw axis, in degrees.
     pub yaw: f32,
 }
 
@@ -65,6 +68,9 @@ impl Storm32Gimbal {
         Ok(())
     }
 
+    /// Open the given path at 115200 8N1 with a 1 s read timeout. The
+    /// constructor only opens the port; protocol detection (a `CMD_GETVERSION`
+    /// probe) is deferred to [`Storm32RC::try_detect`].
     pub fn new(device_path: &str) -> Result<Self> {
         Self::validate_device_path(device_path)?;
 
@@ -89,6 +95,9 @@ impl Storm32Gimbal {
         })
     }
 
+    /// Snapshot of the most recent (process variable, set point) pair the
+    /// driver has computed. Reading does NOT poll the device — see
+    /// [`Self::update_status`] to refresh.
     pub fn get_status(&self) -> GimbalStatus {
         self.current_status
     }
@@ -223,6 +232,8 @@ impl Storm32Gimbal {
         Ok(())
     }
 
+    /// `CMD_SETPITCH` — set pitch axis to a single RC value
+    /// (`700..=2300`, or 0 to recenter). Other axes left untouched.
     pub fn set_pitch(&mut self, value: u16) -> Result<()> {
         Self::validate_rc_value(value, "Pitch")?;
         let payload = RCMessage::create_single_axis_payload(value);
@@ -231,6 +242,7 @@ impl Storm32Gimbal {
         Ok(())
     }
 
+    /// `CMD_SETROLL` — see [`Self::set_pitch`] for the value semantics.
     pub fn set_roll(&mut self, value: u16) -> Result<()> {
         Self::validate_rc_value(value, "Roll")?;
         let payload = RCMessage::create_single_axis_payload(value);
@@ -239,6 +251,7 @@ impl Storm32Gimbal {
         Ok(())
     }
 
+    /// `CMD_SETYAW` — see [`Self::set_pitch`] for the value semantics.
     pub fn set_yaw(&mut self, value: u16) -> Result<()> {
         Self::validate_rc_value(value, "Yaw")?;
         let payload = RCMessage::create_single_axis_payload(value);
@@ -247,14 +260,17 @@ impl Storm32Gimbal {
         Ok(())
     }
 
+    /// Send `CMD_SETPITCH 0` — Storm32 interprets this as "recenter".
     pub fn recenter_pitch(&mut self) -> Result<()> {
         self.set_pitch(0)
     }
 
+    /// Send `CMD_SETROLL 0` — Storm32 interprets this as "recenter".
     pub fn recenter_roll(&mut self) -> Result<()> {
         self.set_roll(0)
     }
 
+    /// Send `CMD_SETYAW 0` — Storm32 interprets this as "recenter".
     pub fn recenter_yaw(&mut self) -> Result<()> {
         self.set_yaw(0)
     }
@@ -288,6 +304,10 @@ impl Storm32Gimbal {
         Ok(())
     }
 
+    /// `CMD_SETPANMODE` — `mode` is the 0..=5 pan-mode byte from the
+    /// STorM32 RC spec (see `daemon::models::PanMode` when the `daemon`
+    /// feature is enabled). Anything outside that range is rejected with
+    /// [`Storm32Error::ValidationError`].
     pub fn set_pan_mode(&mut self, mode: u8) -> Result<()> {
         Self::validate_pan_mode(mode)?;
         let payload = RCMessage::create_set_pan_mode_payload(mode);
@@ -296,6 +316,7 @@ impl Storm32Gimbal {
         Ok(())
     }
 
+    /// `CMD_SETSTANDBY` — toggle the gimbal between active and standby.
     pub fn set_standby(&mut self, enabled: bool) -> Result<()> {
         let state = if enabled { 1u8 } else { 0u8 };
         let payload = RCMessage::create_set_standby_payload(state);

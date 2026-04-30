@@ -1,3 +1,7 @@
+//! Unix-socket IPC server for local clients. Speaks line-delimited JSON
+//! ([`super::models::IpcCommand`] / [`super::models::IpcResponse`]) and
+//! routes through the same priority arbitrator as the MAVLink handlers.
+
 use super::arbitrator::Arbitrator;
 use super::config::IpcConfig;
 use super::models::{CommandMode, ControlSource, GimbalCommand, IpcCommand, IpcResponse, PanMode};
@@ -20,6 +24,10 @@ pub struct IpcServer {
 }
 
 impl IpcServer {
+    /// Build an IPC server bound to the configured Unix socket path.
+    /// Each accepted connection gets its own `Arbitrator` — they all share
+    /// the same `StateManager`, so primary-control / priority decisions
+    /// stay coherent across clients.
     pub fn new(
         config: IpcConfig,
         state_manager: StateManager,
