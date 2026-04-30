@@ -138,12 +138,18 @@ pub(super) async fn attitude_loop(
     /// ~2 seconds of silence, long enough to ride out a transient serial
     /// hiccup but short enough that an unplug is noticed promptly.
     const FAILURE_THRESHOLD: u32 = 8;
+    /// How long after the last failed poll the next *successful* broadcast
+    /// still carries `COMMS_ERROR`. Solid devices clear within one tick;
+    /// flaky devices keep the flag set so a GCS sees `degraded` instead
+    /// of `healthy` on every other frame.
+    const COMMS_ERROR_LINGER: Duration = Duration::from_secs(1);
 
     let mut interval = time::interval(Duration::from_millis(250));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     // We've waited 250ms for the first tick — fire immediately instead.
     interval.tick().await;
     let mut consecutive_failures: u32 = 0;
+    let mut last_failure: Option<Instant> = None;
 
     loop {
         interval.tick().await;
@@ -166,6 +172,7 @@ pub(super) async fn attitude_loop(
             }
             Err(e) => {
                 consecutive_failures = consecutive_failures.wrapping_add(1);
+                last_failure = Some(Instant::now());
                 if consecutive_failures == 1 || consecutive_failures % 20 == 0 {
                     warn!(
                         "Attitude readback failed (#{}): {}",
@@ -185,8 +192,21 @@ pub(super) async fn attitude_loop(
 
         state_manager.update_measured_angles(attitude.yaw, attitude.pitch, attitude.roll);
 
+        // A *recent* failure (this poll succeeded but one within the last
+        // second didn't) means the link is flaky. Surface that to the GCS
+        // via COMMS_ERROR rather than letting an in-between healthy frame
+        // mask the instability.
+        let failure_flags = match last_failure {
+            Some(t) if t.elapsed() < COMMS_ERROR_LINGER => {
+                GimbalDeviceErrorFlags::GIMBAL_DEVICE_ERROR_FLAGS_COMMS_ERROR
+            }
+            _ => GimbalDeviceErrorFlags::empty(),
+        };
+
         let msg = MavMessage::GIMBAL_DEVICE_ATTITUDE_STATUS(build_attitude_status_data(
-            &attitude, start_time,
+            &attitude,
+            start_time,
+            failure_flags,
         ));
 
         let targets: Vec<SocketAddr> = peers.lock().await.iter().copied().collect();
@@ -216,12 +236,14 @@ pub(super) async fn attitude_loop(
 /// every recorded peer, not to a single addressed system. `flags` is set
 /// to `YAW_IN_VEHICLE_FRAME` to be honest about what the manager actually
 /// supports today; earth-frame yaw needs vehicle-attitude integration that
-/// isn't wired up. `failure_flags = empty` until a health-monitoring path
-/// exists (consecutive read failures already stop the broadcast entirely,
-/// so we don't risk advertising a healthy device while it's offline).
+/// isn't wired up. `failure_flags` is supplied by the caller — see
+/// [`attitude_loop`] for the COMMS_ERROR linger window. The persistent
+/// "device is dead" failure mode is still expressed by stopping the
+/// broadcast entirely, not by setting flags on a stale frame.
 fn build_attitude_status_data(
     attitude: &Attitude,
     start_time: Instant,
+    failure_flags: GimbalDeviceErrorFlags,
 ) -> GIMBAL_DEVICE_ATTITUDE_STATUS_DATA {
     let q = euler_deg_to_quaternion_wxyz(attitude.pitch, attitude.roll, attitude.yaw);
     GIMBAL_DEVICE_ATTITUDE_STATUS_DATA {
@@ -233,7 +255,7 @@ fn build_attitude_status_data(
         angular_velocity_x: f32::NAN,
         angular_velocity_y: f32::NAN,
         angular_velocity_z: f32::NAN,
-        failure_flags: GimbalDeviceErrorFlags::empty(),
+        failure_flags,
     }
 }
 
@@ -775,7 +797,8 @@ mod tests {
             roll: -7.5,
             yaw: 33.25,
         };
-        let data = build_attitude_status_data(&attitude, Instant::now());
+        let data =
+            build_attitude_status_data(&attitude, Instant::now(), GimbalDeviceErrorFlags::empty());
 
         // Decoding the quaternion back must recover the input Euler angles.
         // This catches both the math.rs helper and our use of it.
@@ -794,6 +817,7 @@ mod tests {
                 yaw: 0.0,
             },
             Instant::now(),
+            GimbalDeviceErrorFlags::empty(),
         );
 
         // Manager broadcasts to every peer, not a single addressed system.
@@ -809,9 +833,29 @@ mod tests {
         assert!(data.angular_velocity_y.is_nan());
         assert!(data.angular_velocity_z.is_nan());
 
-        // Without health monitoring we don't claim any failures — but the
-        // broadcast loop also stops emitting on consecutive read failures,
-        // so a healthy-looking message paired with a dead device can't go out.
+        // No failures supplied → frame is honestly clean. The persistent
+        // "device is dead" failure mode is expressed by stopping the
+        // broadcast entirely (see attitude_loop), not by setting flags
+        // on a stale frame.
         assert!(data.failure_flags.is_empty());
+    }
+
+    #[test]
+    fn build_attitude_status_propagates_caller_failure_flags() {
+        // The attitude_loop sets COMMS_ERROR for ~1 s after any failed
+        // poll so a flaky-link recovery doesn't slip through as a fully
+        // healthy frame.
+        let data = build_attitude_status_data(
+            &Attitude {
+                pitch: 0.0,
+                roll: 0.0,
+                yaw: 0.0,
+            },
+            Instant::now(),
+            GimbalDeviceErrorFlags::GIMBAL_DEVICE_ERROR_FLAGS_COMMS_ERROR,
+        );
+        assert!(data
+            .failure_flags
+            .contains(GimbalDeviceErrorFlags::GIMBAL_DEVICE_ERROR_FLAGS_COMMS_ERROR));
     }
 }
