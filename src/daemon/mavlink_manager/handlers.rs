@@ -122,6 +122,7 @@ pub(super) async fn publish_status_loop(
 /// `MissedTickBehavior::Skip` keeps the cadence honest if the gimbal mutex
 /// is held longer than the interval (e.g. a slow `set_attitude` queueing
 /// behind us) — we don't queue up backlogged ticks.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn attitude_loop(
     socket: Arc<UdpSocket>,
     peers: Peers,
@@ -130,7 +131,14 @@ pub(super) async fn attitude_loop(
     config: MavlinkConfig,
     gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
     start_time: Instant,
+    notify_lost: Arc<tokio::sync::Notify>,
 ) {
+    /// Number of consecutive poll failures (~250 ms each) before we declare
+    /// the device gone and ask the reconnect task to take over. 8 ticks =
+    /// ~2 seconds of silence, long enough to ride out a transient serial
+    /// hiccup but short enough that an unplug is noticed promptly.
+    const FAILURE_THRESHOLD: u32 = 8;
+
     let mut interval = time::interval(Duration::from_millis(250));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     // We've waited 250ms for the first tick — fire immediately instead.
@@ -163,6 +171,13 @@ pub(super) async fn attitude_loop(
                         "Attitude readback failed (#{}): {}",
                         consecutive_failures, e
                     );
+                }
+                if consecutive_failures == FAILURE_THRESHOLD {
+                    warn!(
+                        "Gimbal silent for {} consecutive polls; signaling reconnect",
+                        FAILURE_THRESHOLD
+                    );
+                    notify_lost.notify_one();
                 }
                 continue;
             }

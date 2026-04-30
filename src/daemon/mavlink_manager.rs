@@ -18,7 +18,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::{debug, error, info, warn};
 
 /// Peer set: every GCS (or autopilot) we've ever received a packet from.
@@ -53,6 +53,9 @@ pub struct MavlinkManager {
     seq: Arc<AtomicU8>,
     /// Daemon start time for `time_boot_ms` computation.
     start_time: Instant,
+    /// Set by the attitude poll loop after `FAILURE_THRESHOLD` consecutive
+    /// readback errors. The daemon-level reconnect task awaits on this.
+    notify_lost: Arc<Notify>,
 }
 
 impl MavlinkManager {
@@ -60,6 +63,7 @@ impl MavlinkManager {
         config: MavlinkConfig,
         state_manager: StateManager,
         gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+        notify_lost: Arc<Notify>,
     ) -> Self {
         let arbitrator = Arc::new(Arbitrator::new(state_manager.clone()));
 
@@ -71,6 +75,7 @@ impl MavlinkManager {
             peers: Arc::new(Mutex::new(HashSet::new())),
             seq: Arc::new(AtomicU8::new(0)),
             start_time: Instant::now(),
+            notify_lost,
         }
     }
 
@@ -122,7 +127,9 @@ impl MavlinkManager {
         // 4 Hz attitude poll + GIMBAL_DEVICE_ATTITUDE_STATUS broadcast.
         // This is the only writer of measured state.{yaw,pitch,roll} — see
         // `Arbitrator::process_command` for why commanded values stay in
-        // `last_command` instead of overwriting the measured fields.
+        // `last_command` instead of overwriting the measured fields. After
+        // `FAILURE_THRESHOLD` consecutive errors it pings `notify_lost` to
+        // hand recovery off to the daemon-level reconnect task.
         {
             let socket = socket.clone();
             let peers = self.peers.clone();
@@ -131,9 +138,19 @@ impl MavlinkManager {
             let config = config.clone();
             let gimbal = self.gimbal.clone();
             let start_time = self.start_time;
+            let notify_lost = self.notify_lost.clone();
             tokio::spawn(async move {
-                handlers::attitude_loop(socket, peers, seq, state, config, gimbal, start_time)
-                    .await;
+                handlers::attitude_loop(
+                    socket,
+                    peers,
+                    seq,
+                    state,
+                    config,
+                    gimbal,
+                    start_time,
+                    notify_lost,
+                )
+                .await;
             });
         }
 
