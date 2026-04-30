@@ -32,17 +32,9 @@
 //! - **`cli`** (default) — pulls in clap / env_logger / anyhow for the
 //!   `turret` binary. The bin target requires both `cli` and `daemon`.
 
-#![forbid(unsafe_code)]
-#![deny(clippy::disallowed_types)]
-// CLAUDE.md: library code is never allowed to crash the process via
-// unwrap/expect/panic. Tests opt out locally with #[allow(...)] on
-// each `mod tests` block.
-#![deny(clippy::unwrap_used)]
-#![deny(clippy::expect_used)]
-#![deny(clippy::panic)]
-#![deny(clippy::await_holding_lock)]
-#![deny(clippy::let_underscore_must_use)]
-#![deny(clippy::let_underscore_future)]
+// Crate-level lint floor (`forbid(unsafe_code)`, `deny(clippy::unwrap_used)`,
+// etc.) lives in `Cargo.toml [lints]`. Tests opt out per `mod tests` block
+// via `#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`.
 
 #[cfg(feature = "daemon")]
 pub mod daemon;

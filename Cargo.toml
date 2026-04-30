@@ -11,7 +11,10 @@ documentation = "https://docs.rs/turret"
 readme = "README.md"
 keywords = ["turret", "gimbal", "storm32", "mavlink", "serial"]
 categories = ["command-line-utilities", "hardware-support"]
-rust-version = "1.70"
+# 1.74 is the floor for `[lints]` tables in Cargo.toml. Without this,
+# the lints below silently fall back to the lib.rs `#![deny()]` block,
+# which doesn't propagate to consumers using `cargo metadata`.
+rust-version = "1.74"
 # Dev artifacts that have no business shipping in the crates.io tarball.
 # Source files that ARE compiled live under src/ and are included by default;
 # this list only filters auxiliary docs / scripts at the repo root.
@@ -37,10 +40,11 @@ daemon = [
     "dep:mavlink",
 ]
 
-# Enables the CLI binary's runtime needs (clap arg parser, env_logger
-# subscriber, anyhow at the main boundary). The bin target itself is
-# only built when both `cli` and `daemon` are enabled.
-cli = ["dep:clap", "dep:tracing-subscriber", "dep:anyhow"]
+# Enables the CLI binary's runtime needs (clap arg parser, tracing
+# subscriber). The bin target itself is only built when both `cli`
+# and `daemon` are enabled. Errors propagate as `turret::Error`; no
+# anyhow dependency in the package at all.
+cli = ["dep:clap", "dep:tracing-subscriber"]
 
 [dependencies]
 # Library core — always on.
@@ -52,7 +56,6 @@ serde = { version = "1.0", features = ["derive"] }
 # CLI-only.
 clap = { version = "4.0", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-anyhow = { version = "1.0", optional = true }
 
 # Daemon-only.
 tokio = { version = "1.42", features = ["full"], optional = true }
@@ -65,6 +68,23 @@ mavlink = { version = "0.13", optional = true }
 name = "turret"
 path = "src/main.rs"
 required-features = ["cli", "daemon"]
+
+# Library-wide lint floor. See `clippy.toml` for the configuration list
+# that backs `disallowed_types`. `forbid` is used wherever no exception
+# exists in the entire package (lib + bin + tests); inner attributes
+# can't override `forbid`. `unwrap_used` / `expect_used` / `panic` stay
+# at `deny` because each `mod tests` block explicitly opts out.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+disallowed_types = "forbid"
+await_holding_lock = "forbid"
+let_underscore_must_use = "forbid"
+let_underscore_future = "forbid"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
 
 [profile.release]
 opt-level = 'z'       # Optimize for size
