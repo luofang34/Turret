@@ -13,14 +13,15 @@ pub mod models;
 pub mod state;
 
 use crate::device_scanner::DeviceScanner;
-use crate::gimbal;
+use crate::gimbal::{self, GimbalDevice};
 use config::DaemonConfig;
 use ipc_server::IpcServer;
 use mavlink_manager::MavlinkManager;
 use state::StateManager;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::{error, info};
+use std::time::Duration;
+use tokio::sync::{Mutex, Notify};
+use tracing::{debug, error, info, warn};
 
 /// Main daemon entry point
 pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()> {
@@ -70,8 +71,26 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         state_manager.update_firmware_version(version);
     }
 
-    // Wrap gimbal in Arc<Mutex> for sharing between IPC and MAVLink
+    // Wrap gimbal in Arc<Mutex> for sharing between IPC, MAVLink, and the
+    // hot-plug recovery task.
     let gimbal_shared = Arc::new(Mutex::new(gimbal));
+
+    // The MAVLink attitude poll loop pings this when it counts too many
+    // consecutive read failures; the reconnect task takes over from there.
+    let notify_lost = Arc::new(Notify::new());
+
+    // Hot-plug recovery: scan for a replacement device, open it, swap into
+    // the shared gimbal slot. Must run before any user-facing task spawn
+    // so an early unplug during start-up still gets recovered.
+    {
+        let notify = notify_lost.clone();
+        let gimbal = gimbal_shared.clone();
+        let state = state_manager.clone();
+        let configured_path = config.device.path.clone();
+        tokio::spawn(async move {
+            reconnect_task(notify, gimbal, state, configured_path).await;
+        });
+    }
 
     // Start IPC server
     let ipc_gimbal = gimbal_shared.clone();
@@ -90,9 +109,15 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         let mavlink_gimbal = gimbal_shared.clone();
         let mavlink_state = state_manager.clone();
         let mavlink_cfg = config.mavlink.clone();
+        let mavlink_notify_lost = notify_lost.clone();
 
         tokio::spawn(async move {
-            let manager = MavlinkManager::new(mavlink_cfg.clone(), mavlink_state, mavlink_gimbal);
+            let manager = MavlinkManager::new(
+                mavlink_cfg.clone(),
+                mavlink_state,
+                mavlink_gimbal,
+                mavlink_notify_lost,
+            );
             if let Err(e) = manager.start(mavlink_cfg).await {
                 error!("MAVLink manager error: {}", e);
             }
@@ -105,6 +130,79 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
     info!("Received {}, exiting...", signal_name);
 
     Ok(())
+}
+
+/// Hot-plug recovery: wait until the attitude poll loop reports the device
+/// is silent, then keep retrying detection until it comes back.
+///
+/// `configured_path` is whatever the user wrote in the YAML — `"auto"` means
+/// rescan via `DeviceScanner`, anything else is a fixed path. We always
+/// honor that knob; if the user pinned `/dev/ttyACM0` we don't silently
+/// switch to a different device just because something else is plugged in.
+///
+/// On a successful re-open we swap the new `Box<dyn GimbalDevice>` into the
+/// shared `Arc<Mutex<...>>` slot; every other task (IPC, MAVLink, attitude
+/// poll) keeps holding the same `Arc` and sees the new gimbal on its next
+/// `lock().await`. The lock is held only for the swap itself — scanning and
+/// opening happen unlocked so concurrent commands keep failing fast against
+/// the dead handle instead of piling up behind us.
+async fn reconnect_task(
+    notify_lost: Arc<Notify>,
+    gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+    state_manager: StateManager,
+    configured_path: String,
+) {
+    loop {
+        notify_lost.notified().await;
+        warn!(
+            "Reconnect: attitude loop signaled device lost; beginning recovery (configured path: {})",
+            configured_path
+        );
+
+        let mut backoff = Duration::from_millis(500);
+        const MAX_BACKOFF: Duration = Duration::from_secs(10);
+        let mut attempt: u32 = 0;
+
+        let new_gimbal = loop {
+            attempt = attempt.wrapping_add(1);
+
+            let path = if configured_path == "auto" {
+                DeviceScanner::new().find_storm32_device()
+            } else if std::path::Path::new(&configured_path).exists() {
+                Some(configured_path.clone())
+            } else {
+                None
+            };
+
+            if let Some(path) = path {
+                match gimbal::detect_gimbal(&path) {
+                    Ok(g) => {
+                        info!(
+                            "Reconnect: re-opened gimbal at {} after {} attempts",
+                            path, attempt
+                        );
+                        break g;
+                    }
+                    Err(e) => debug!("Reconnect attempt {} on {} failed: {}", attempt, path, e),
+                }
+            } else {
+                debug!("Reconnect attempt {}: no candidate device found", attempt);
+            }
+
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+        };
+
+        let mut new_gimbal = new_gimbal;
+        if let Ok(version) = new_gimbal.get_version() {
+            info!("Reconnect: firmware version is {}", version);
+            state_manager.update_firmware_version(version);
+        }
+
+        // Swap last so concurrent ops can't see a half-initialized box.
+        *gimbal.lock().await = new_gimbal;
+        info!("Reconnect: gimbal swap complete; resuming normal operation");
+    }
 }
 
 /// Block until SIGINT (`Ctrl-C`) or, on Unix, SIGTERM.
