@@ -1,3 +1,3 @@
 disallowed-types = [
-    { path = "anyhow::Error", reason = "Library code must use turret::Error; anyhow is allowed only in src/main.rs." },
+    { path = "anyhow::Error", reason = "Use turret::Error throughout the package — including the bin. anyhow is no longer pulled in as a dependency at all; this guardrail prevents a regression." },
 ]
