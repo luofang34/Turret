@@ -1,3 +1,7 @@
+//! Shared in-memory daemon state: measured attitude, last-accepted
+//! command, primary/secondary control ownership. All access goes through
+//! `parking_lot::RwLock` so a panicking writer can't poison readers.
+
 use super::models::{GimbalCommand, GimbalState, PrimaryControl};
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -14,6 +18,9 @@ pub struct StateManager {
 }
 
 impl StateManager {
+    /// Construct a fresh state manager with default zero values. Cheap to
+    /// `clone()` — the inner state is `Arc<RwLock<...>>` so all clones share
+    /// the same underlying buffers.
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(GimbalState::default())),

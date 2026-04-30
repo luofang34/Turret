@@ -1,18 +1,31 @@
+//! Domain types shared by the daemon's command path: MAVLink / IPC inbound,
+//! arbitrator, state manager.
+
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
-/// Pan modes supported by the gimbal
+/// Pan-mode bytes that the STorM32 RC `CMD_SETPANMODE` command takes
+/// (0..=5). Each name describes the per-axis policy as `pitch | roll | yaw`,
+/// where `Pan` follows vehicle yaw and `Hold` locks to earth frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PanMode {
+    /// Pan mode disabled — STorM32 returns to its configured default.
     Off = 0,
+    /// Pitch held, roll held, yaw pans with vehicle.
     HoldHoldPan = 1,
+    /// All three axes hold (earth frame).
     HoldHoldHold = 2,
+    /// All three axes pan with vehicle.
     PanPanPan = 3,
+    /// Pitch pans, roll holds, yaw holds.
     PanHoldHold = 4,
+    /// Pitch pans, roll holds, yaw pans.
     PanHoldPan = 5,
 }
 
 impl PanMode {
+    /// Decode the wire-format byte (0..=5). Returns `None` for any other
+    /// value so callers can reject invalid pan-mode requests at the boundary.
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(PanMode::Off),
@@ -25,6 +38,8 @@ impl PanMode {
         }
     }
 
+    /// Short uppercase name used in IPC `Status` JSON. Matches the
+    /// `CMD_SETPANMODE` constant names from the STorM32 RC spec.
     pub fn to_name(&self) -> &'static str {
         match self {
             PanMode::Off => "OFF",
@@ -37,32 +52,46 @@ impl PanMode {
     }
 }
 
-/// Control source for gimbal commands
+/// Where a gimbal command came from. Used by [`ControlSource::priority`] to
+/// decide whether a newly arrived command preempts the in-flight one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlSource {
-    UnixSocket(u32), // Client ID
-    Mavlink(u8),     // System ID
-    Cli,             // CLI test commands
+    /// IPC client connected to the Unix socket. The `u32` is an
+    /// IPC-server-assigned client id, monotonic per daemon run.
+    UnixSocket(u32),
+    /// MAVLink message originating from sysid `u8`. Sysid 1 is treated as
+    /// the autopilot and gets the highest priority.
+    Mavlink(u8),
+    /// CLI subcommand running on the same host (e.g. `turret set ...`).
+    Cli,
 }
 
 impl ControlSource {
-    /// Get priority level (higher = more authority)
+    /// Priority level used by the arbitrator — a strictly higher number
+    /// preempts a strictly lower one. Same-priority sources are ordered by
+    /// timestamp ("last writer wins").
     pub fn priority(&self) -> u8 {
         match self {
-            ControlSource::Mavlink(1) => 100,   // Autopilot (sysid 1)
-            ControlSource::Mavlink(_) => 50,    // Other MAVLink systems (GCS)
-            ControlSource::UnixSocket(_) => 20, // Local clients
-            ControlSource::Cli => 10,           // CLI test commands (lowest)
+            ControlSource::Mavlink(1) => 100,
+            ControlSource::Mavlink(_) => 50,
+            ControlSource::UnixSocket(_) => 20,
+            ControlSource::Cli => 10,
         }
     }
 }
 
-/// Command mode for gimbal control
+/// What the command body's three axis values mean. Today only
+/// [`CommandMode::Position`] is fully wired through — see the
+/// `Arbitrator::process_command` `Rate`/`Manual` branches for the gaps.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum CommandMode {
-    Position, // Absolute angle in degrees
-    Rate,     // Angular velocity in degrees/second
-    Manual,   // Direct stick-like inputs (-1.0 to +1.0)
+    /// Absolute angle in degrees per axis.
+    Position,
+    /// Angular velocity in degrees per second.
+    Rate,
+    /// Normalized stick-like input on `[-1.0, 1.0]` — handlers scale this
+    /// to ±90° before clamping to configured device limits.
+    Manual,
 }
 
 /// MAVLink primary / secondary control ownership.
@@ -96,18 +125,29 @@ impl PrimaryControl {
     }
 }
 
-/// Gimbal command with source and timestamp
+/// One inbound command on its way through the arbitrator. `yaw / pitch /
+/// roll` are `Option<f32>` so a partial command can leave an axis
+/// untouched, which the IPC `pitch`/`roll`/`yaw` subcommands take advantage
+/// of.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GimbalCommand {
+    /// Where this command came from. Drives priority arbitration.
     pub source: ControlSource,
+    /// Whether `yaw / pitch / roll` are angles, rates, or normalized inputs.
     pub mode: CommandMode,
+    /// Yaw axis — `None` means "leave alone".
     pub yaw: Option<f32>,
+    /// Pitch axis — `None` means "leave alone".
     pub pitch: Option<f32>,
+    /// Roll axis — `None` means "leave alone".
     pub roll: Option<f32>,
+    /// When this command was constructed. Used for tie-breaking
+    /// same-priority sources and for staleness checks.
     pub timestamp: SystemTime,
 }
 
 impl GimbalCommand {
+    /// Construct a command stamped with the current time.
     pub fn new(
         source: ControlSource,
         mode: CommandMode,
@@ -125,7 +165,8 @@ impl GimbalCommand {
         }
     }
 
-    /// Check if command is stale (older than 5 seconds)
+    /// True if the command is older than 5 seconds — at which point the
+    /// arbitrator allows a lower-priority source to take over.
     pub fn is_stale(&self) -> bool {
         if let Ok(elapsed) = self.timestamp.elapsed() {
             elapsed.as_secs() > 5
@@ -145,15 +186,23 @@ impl GimbalCommand {
 /// "we measured this at time T" (`Some(t)`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GimbalState {
+    /// Last measured yaw angle, in degrees. Meaningful only if
+    /// `measured_at.is_some()`.
     pub yaw: f32,
+    /// Last measured pitch angle, in degrees. See [`Self::yaw`].
     pub pitch: f32,
+    /// Last measured roll angle, in degrees. See [`Self::yaw`].
     pub roll: f32,
     /// `Some(t)` once we've successfully read attitude from the device at
     /// least once; `None` until then.
     pub measured_at: Option<SystemTime>,
+    /// Most recent pan-mode the gimbal was configured into.
     pub pan_mode: PanMode,
+    /// Whether `CMD_SETSTANDBY 1` has been sent and not yet undone.
     pub standby: bool,
+    /// Decoded `CMD_GETVERSION` string captured at startup, if successful.
     pub firmware_version: Option<String>,
+    /// Wallclock of the last write to any field above.
     pub last_update: SystemTime,
 }
 
@@ -183,72 +232,106 @@ impl GimbalState {
         self.last_update = now;
     }
 
+    /// Update the recorded pan mode after a successful `CMD_SETPANMODE`.
     pub fn update_pan_mode(&mut self, mode: PanMode) {
         self.pan_mode = mode;
         self.last_update = SystemTime::now();
     }
 
+    /// Update the recorded standby flag after a successful `CMD_SETSTANDBY`.
     pub fn update_standby(&mut self, standby: bool) {
         self.standby = standby;
         self.last_update = SystemTime::now();
     }
 }
 
-/// IPC command from Unix socket clients
+/// Wire-format command from an IPC client.
+///
+/// Serde tag-and-rename produces JSON of the form
+/// `{"cmd": "set", "pitch": 10.0, "roll": 0.0, "yaw": 0.0}`. Each variant
+/// maps to a single corresponding handler in `IpcServer::process_command`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "lowercase")]
 pub enum IpcCommand {
+    /// Move all three axes to the given absolute angles in degrees.
     Set {
+        /// Target pitch angle (degrees).
         pitch: f32,
+        /// Target roll angle (degrees).
         roll: f32,
+        /// Target yaw angle (degrees).
         yaw: f32,
     },
+    /// Move all three axes to zero.
     Center,
+    /// Read the cached gimbal state — does NOT poll the device.
     Status,
+    /// Decode the gimbal's `CMD_GETVERSION` reply.
     Version,
+    /// Decode the gimbal's `CMD_GETVERSIONSTR` reply (longer, human-readable).
     #[serde(rename = "version-str")]
     VersionStr,
+    /// Storm32-only: set pitch axis to a raw RC value (700..=2300, 0 = recenter).
     Pitch {
+        /// RC value 700..=2300, or 0 to recenter.
         value: u16,
     },
+    /// Storm32-only: set roll axis to a raw RC value. See [`Self::Pitch`].
     Roll {
+        /// RC value 700..=2300, or 0 to recenter.
         value: u16,
     },
+    /// Storm32-only: set yaw axis to a raw RC value. See [`Self::Pitch`].
     Yaw {
+        /// RC value 700..=2300, or 0 to recenter.
         value: u16,
     },
+    /// Set the pan-mode byte. See [`PanMode`] for the encoding.
     #[serde(rename = "pan-mode")]
     PanMode {
+        /// Pan-mode byte 0..=5; rejected otherwise.
         mode: u8,
     },
+    /// Toggle standby (`true` = standby, `false` = active).
     Standby {
+        /// New standby state.
         enable: bool,
     },
+    /// Return a JSON description of all available commands.
     Help,
 }
 
-/// IPC response to Unix socket clients
+/// Wire-format response sent back over the IPC socket. JSON form is
+/// `{"status": "ok", "data": ...}` or `{"status": "error", "message": ...}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum IpcResponse {
+    /// Successful command execution. `data` carries any payload the
+    /// handler wanted to return (e.g. `Status` returns the gimbal state).
     Ok {
+        /// Optional payload returned alongside the OK status.
         #[serde(skip_serializing_if = "Option::is_none")]
         data: Option<serde_json::Value>,
     },
+    /// Failed command execution.
     Error {
+        /// Human-readable failure reason.
         message: String,
     },
 }
 
 impl IpcResponse {
+    /// Construct an OK response with no payload.
     pub fn ok() -> Self {
         IpcResponse::Ok { data: None }
     }
 
+    /// Construct an OK response carrying a JSON payload.
     pub fn ok_with_data(data: serde_json::Value) -> Self {
         IpcResponse::Ok { data: Some(data) }
     }
 
+    /// Construct an error response with a human-readable message.
     pub fn error(message: impl Into<String>) -> Self {
         IpcResponse::Error {
             message: message.into(),

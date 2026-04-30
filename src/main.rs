@@ -1,3 +1,12 @@
+//! `turret` CLI: thin wrapper over [`turret::gimbal`] / [`turret::daemon`].
+//!
+//! In one-shot mode (the default), it parses a subcommand, opens the
+//! gimbal once, runs the operation, prints the result, and exits. With
+//! `--daemon`, it instead loads `turret.yaml` and hands off to
+//! [`turret::daemon::run_daemon`]. Errors propagate as
+//! [`turret::error::Error`] to `main`'s return value, so the process
+//! exit code reflects the failure shape.
+
 use clap::{Arg, ArgMatches, Command};
 use tracing::{debug, error, info};
 use tracing_subscriber::filter::LevelFilter;

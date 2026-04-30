@@ -1,3 +1,7 @@
+//! Priority-aware command arbitrator: serializes IPC / MAVLink / CLI
+//! commands onto the single gimbal handle and rejects lower-priority
+//! commands when a higher-priority one is still in flight.
+
 use super::models::{CommandMode, GimbalCommand};
 use super::state::StateManager;
 use crate::gimbal::GimbalDevice;
@@ -9,6 +13,8 @@ pub struct Arbitrator {
 }
 
 impl Arbitrator {
+    /// Build an arbitrator that records accepted commands in the given
+    /// shared `StateManager`.
     pub fn new(state_manager: StateManager) -> Self {
         Self { state_manager }
     }

@@ -1,42 +1,54 @@
+//! YAML-backed daemon configuration. Loaded from `turret.yaml` on
+//! startup; falls back to [`DaemonConfig::default`] if the file is
+//! missing or malformed.
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Top-level daemon config shape — one section per long-lived component.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
+    /// Serial device selection.
     pub device: DeviceConfig,
+    /// Unix-socket IPC server settings.
     pub ipc: IpcConfig,
+    /// MAVLink Gimbal Manager settings.
     pub mavlink: MavlinkConfig,
+    /// Tracing subscriber settings.
     pub logging: LoggingConfig,
 }
 
+/// Where to find the gimbal hardware.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceConfig {
-    /// Device path (e.g., "/dev/ttyACM0") or "auto" for auto-detection
+    /// Device path (e.g., "/dev/ttyACM0") or `"auto"` to scan USB CDC.
     pub path: String,
 }
 
+/// Local IPC server settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcConfig {
-    /// Unix socket path for IPC
+    /// Unix socket path the IPC server binds to (and `unlink(2)`s on shutdown).
     pub socket_path: String,
 }
 
+/// MAVLink Gimbal Manager runtime settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MavlinkConfig {
-    /// Enable MAVLink protocol
+    /// Enable the MAVLink Gimbal Manager. When `false`, no UDP socket is bound.
     pub enabled: bool,
-    /// Transport type: "udp" or "serial"
+    /// Transport type. Currently only `"udp"` is implemented.
     pub transport: String,
-    /// UDP port (if transport is "udp")
+    /// UDP port (when `transport == "udp"`).
     pub udp_port: u16,
-    /// Serial device (if transport is "serial")
+    /// Serial device for the eventual serial MAVLink transport.
     #[serde(default)]
     pub serial_device: Option<String>,
-    /// MAVLink system ID
+    /// MAVLink system ID this manager advertises in HEARTBEAT.
     pub sysid: u8,
-    /// MAVLink component ID (154 = MAV_COMP_ID_GIMBAL)
+    /// MAVLink component ID — typically 154 (`MAV_COMP_ID_GIMBAL`).
     pub compid: u8,
-    /// Gimbal device limits advertised in GIMBAL_MANAGER_INFORMATION and
+    /// Gimbal device limits advertised in `GIMBAL_MANAGER_INFORMATION` and
     /// enforced (by clamping) on every inbound command.
     #[serde(default)]
     pub limits: GimbalLimits,
@@ -76,9 +88,11 @@ impl Default for GimbalLimits {
     }
 }
 
+/// Tracing subscriber knob. The CLI's `-v / -vv / -vvv` flag overrides
+/// this for command-line usage; the daemon honors only this field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
-    /// Log level: "trace", "debug", "info", "warn", "error"
+    /// Log level — `"trace" / "debug" / "info" / "warn" / "error"`.
     pub level: String,
 }
 

@@ -1,4 +1,12 @@
-// Rust 2018+ style: module file is src/daemon.rs, submodules in src/daemon/
+//! Long-running daemon: IPC server + MAVLink Gimbal Manager + hot-plug
+//! recovery glued onto a single gimbal handle.
+//!
+//! [`run_daemon`] is the entry point; everything else under this module is
+//! the building blocks it spawns. Submodules are public so an external
+//! crate can wire its own combination — see the `arbitrator` /
+//! `mavlink_manager` / `state` types — but the supported way to bring up
+//! the full daemon is `run_daemon`.
+
 #[path = "daemon/arbitrator.rs"]
 pub mod arbitrator;
 #[path = "daemon/config.rs"]

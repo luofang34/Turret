@@ -59,6 +59,10 @@ pub struct MavlinkManager {
 }
 
 impl MavlinkManager {
+    /// Build a MAVLink Gimbal Manager. `notify_lost` is the shared
+    /// `Notify` that the attitude poll loop pings when consecutive read
+    /// failures cross the loop's failure threshold; the daemon-level
+    /// `reconnect_task` drives recovery from there.
     pub fn new(
         config: MavlinkConfig,
         state_manager: StateManager,

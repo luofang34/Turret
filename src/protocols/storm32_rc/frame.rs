@@ -13,40 +13,65 @@ const RC_START_SIGN_IN: u8 = 0xFA;
 /// [`RCMessage::parse_response`].
 pub(super) const RC_START_SIGN_OUT: u8 = 0xFB;
 
-/// Command IDs from the STorM32 RC Commands protocol.
+/// Command IDs from the STorM32 RC Commands protocol. Comments give the
+/// official `CMD_*` name from olliw's wiki.
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum RCCommand {
-    GetVersion = 1,             // CMD_GETVERSION
-    GetVersionStr = 2,          // CMD_GETVERSIONSTR
-    GetParameter = 3,           // CMD_GETPARAMETER
-    SetParameter = 4,           // CMD_SETPARAMETER
-    GetData = 5,                // CMD_GETDATA
-    GetDataFields = 6,          // CMD_GETDATAFIELDS
-    SetPitch = 10,              // CMD_SETPITCH
-    SetRoll = 11,               // CMD_SETROLL
-    SetYaw = 12,                // CMD_SETYAW
-    SetPanMode = 13,            // CMD_SETPANMODE
-    SetStandby = 14,            // CMD_SETSTANDBY
-    DoCamera = 15,              // CMD_DOCAMERA
-    SetScriptControl = 16,      // CMD_SETSCRIPTCONTROL
-    SetAngle = 17,              // CMD_SETANGLE
-    SetPitchRollYaw = 18,       // CMD_SETPITCHROLLYAW
-    SetPwmOut = 19,             // CMD_SETPWMOUT
-    RestoreParameter = 20,      // CMD_RESTOREPARAMETER
-    RestoreAllParameter = 21,   // CMD_RESTOREALLPARAMETER
-    ActivePanModeSetting = 100, // CMD_ACTIVEPANMODESETTING
-    Ack = 150,                  // CMD_ACK
+    /// `CMD_GETVERSION` — three u16 (firmware, layout, capabilities).
+    GetVersion = 1,
+    /// `CMD_GETVERSIONSTR` — three 16-byte ASCII fields (version, name, board).
+    GetVersionStr = 2,
+    /// `CMD_GETPARAMETER` — read a single parameter by index.
+    GetParameter = 3,
+    /// `CMD_SETPARAMETER` — write a single parameter by index.
+    SetParameter = 4,
+    /// `CMD_GETDATA` — request a fixed live-data snapshot.
+    GetData = 5,
+    /// `CMD_GETDATAFIELDS` — request a bitmask-selected set of live-data fields.
+    GetDataFields = 6,
+    /// `CMD_SETPITCH` — single-axis RC value (700..=2300, 0 = recenter).
+    SetPitch = 10,
+    /// `CMD_SETROLL` — see [`Self::SetPitch`].
+    SetRoll = 11,
+    /// `CMD_SETYAW` — see [`Self::SetPitch`].
+    SetYaw = 12,
+    /// `CMD_SETPANMODE` — pan-mode byte (0..=5).
+    SetPanMode = 13,
+    /// `CMD_SETSTANDBY` — standby on/off (0 or 1).
+    SetStandby = 14,
+    /// `CMD_DOCAMERA` — trigger one of the camera shutter actions.
+    DoCamera = 15,
+    /// `CMD_SETSCRIPTCONTROL` — drive an embedded STorM32 script slot.
+    SetScriptControl = 16,
+    /// `CMD_SETANGLE` — float pitch/roll/yaw plus flags + type byte.
+    SetAngle = 17,
+    /// `CMD_SETPITCHROLLYAW` — three u16 RC values in one packet.
+    SetPitchRollYaw = 18,
+    /// `CMD_SETPWMOUT` — drive a generic PWM output channel.
+    SetPwmOut = 19,
+    /// `CMD_RESTOREPARAMETER` — reset a single parameter to its default.
+    RestoreParameter = 20,
+    /// `CMD_RESTOREALLPARAMETER` — reset every parameter to default.
+    RestoreAllParameter = 21,
+    /// `CMD_ACTIVEPANMODESETTING` — read back the currently active pan mode.
+    ActivePanModeSetting = 100,
+    /// `CMD_ACK` — generic single-byte ACK reply (0x4A).
+    Ack = 150,
 }
 
-/// One framed request/response on the RC protocol.
+/// One framed request/response on the RC protocol — the parsed view that
+/// sits between the wire bytes and the driver's typed command wrappers.
 #[derive(Debug)]
 pub struct RCMessage {
+    /// Command ID this message carries.
     pub command: RCCommand,
+    /// Command-specific payload bytes (no framing or CRC).
     pub payload: Vec<u8>,
 }
 
 impl RCMessage {
+    /// Construct a message with the given command and payload.
     pub fn new(command: RCCommand, payload: Vec<u8>) -> Self {
         Self { command, payload }
     }

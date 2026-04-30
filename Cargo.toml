@@ -76,6 +76,7 @@ required-features = ["cli", "daemon"]
 # at `deny` because each `mod tests` block explicitly opts out.
 [lints.rust]
 unsafe_code = "forbid"
+missing_docs = "deny"
 
 [lints.clippy]
 disallowed_types = "forbid"
