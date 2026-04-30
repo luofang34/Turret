@@ -21,7 +21,15 @@ use state::StateManager;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
+
+/// How long to wait for each background task to wind down on shutdown
+/// before we give up and let `JoinHandle::abort` finish the job. Long
+/// enough for an in-flight serial exchange to time out at the driver's
+/// 1 s read timeout, short enough to fit comfortably inside systemd's
+/// default 90 s `TimeoutStopSec`.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 /// Main daemon entry point
 pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()> {
@@ -79,6 +87,11 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
     // consecutive read failures; the reconnect task takes over from there.
     let notify_lost = Arc::new(Notify::new());
 
+    // Track every long-lived task so SIGTERM / SIGINT can drain them with a
+    // bounded grace window instead of letting the runtime drop kill them
+    // mid-syscall.
+    let mut tasks: Vec<(&'static str, JoinHandle<()>)> = Vec::new();
+
     // Hot-plug recovery: scan for a replacement device, open it, swap into
     // the shared gimbal slot. Must run before any user-facing task spawn
     // so an early unplug during start-up still gets recovered.
@@ -87,22 +100,29 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         let gimbal = gimbal_shared.clone();
         let state = state_manager.clone();
         let configured_path = config.device.path.clone();
-        tokio::spawn(async move {
-            reconnect_task(notify, gimbal, state, configured_path).await;
-        });
+        tasks.push((
+            "reconnect",
+            tokio::spawn(async move {
+                reconnect_task(notify, gimbal, state, configured_path).await;
+            }),
+        ));
     }
 
     // Start IPC server
     let ipc_gimbal = gimbal_shared.clone();
     let ipc_state = state_manager.clone();
     let ipc_config = config.ipc.clone();
+    let ipc_socket_path = ipc_config.socket_path.clone();
 
-    tokio::spawn(async move {
-        let server = IpcServer::new(ipc_config, ipc_state, ipc_gimbal);
-        if let Err(e) = server.start().await {
-            error!("IPC server error: {}", e);
-        }
-    });
+    tasks.push((
+        "ipc",
+        tokio::spawn(async move {
+            let server = IpcServer::new(ipc_config, ipc_state, ipc_gimbal);
+            if let Err(e) = server.start().await {
+                error!("IPC server error: {}", e);
+            }
+        }),
+    ));
 
     // Start MAVLink manager if enabled
     if config.mavlink.enabled {
@@ -111,25 +131,67 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         let mavlink_cfg = config.mavlink.clone();
         let mavlink_notify_lost = notify_lost.clone();
 
-        tokio::spawn(async move {
-            let manager = MavlinkManager::new(
-                mavlink_cfg.clone(),
-                mavlink_state,
-                mavlink_gimbal,
-                mavlink_notify_lost,
-            );
-            if let Err(e) = manager.start(mavlink_cfg).await {
-                error!("MAVLink manager error: {}", e);
-            }
-        });
+        tasks.push((
+            "mavlink",
+            tokio::spawn(async move {
+                let manager = MavlinkManager::new(
+                    mavlink_cfg.clone(),
+                    mavlink_state,
+                    mavlink_gimbal,
+                    mavlink_notify_lost,
+                );
+                if let Err(e) = manager.start(mavlink_cfg).await {
+                    error!("MAVLink manager error: {}", e);
+                }
+            }),
+        ));
     }
 
     info!("Daemon started successfully");
 
     let signal_name = wait_for_shutdown_signal().await?;
-    info!("Received {}, exiting...", signal_name);
+    info!("Received {}, beginning bounded shutdown...", signal_name);
+    drain_tasks(tasks).await;
+    cleanup_ipc_socket(&ipc_socket_path);
+    info!("Daemon stopped");
 
     Ok(())
+}
+
+/// Abort every tracked task, then wait up to [`SHUTDOWN_GRACE`] for each to
+/// actually finish. Tasks that miss the deadline get logged but don't block
+/// the rest of shutdown — `JoinHandle::abort` already dropped the future,
+/// the worst case is a syscall that hasn't returned yet (e.g. the storm32
+/// driver's blocking serial read at the 1 s port timeout).
+async fn drain_tasks(tasks: Vec<(&'static str, JoinHandle<()>)>) {
+    for (name, handle) in &tasks {
+        debug!("Aborting task '{}'", name);
+        handle.abort();
+    }
+    for (name, handle) in tasks {
+        match tokio::time::timeout(SHUTDOWN_GRACE, handle).await {
+            Ok(Ok(())) => debug!("Task '{}' exited cleanly", name),
+            Ok(Err(e)) if e.is_cancelled() => debug!("Task '{}' aborted", name),
+            Ok(Err(e)) => warn!("Task '{}' exited with error: {}", name, e),
+            Err(_) => warn!(
+                "Task '{}' did not exit within {:?}; runtime will drop it",
+                name, SHUTDOWN_GRACE
+            ),
+        }
+    }
+}
+
+/// Remove the Unix socket file the IPC server bound to. The server itself
+/// removes a stale socket on the *next* startup, so leaving the file behind
+/// isn't fatal — but a clean shutdown shouldn't litter `/tmp`, and removing
+/// it here is also what most `systemd.service` units expect when they kill
+/// the daemon.
+fn cleanup_ipc_socket(path: &str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => debug!("Removed IPC socket file {}", path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => warn!("Failed to remove IPC socket {}: {}", path, e),
+    }
 }
 
 /// Hot-plug recovery: wait until the attitude poll loop reports the device
