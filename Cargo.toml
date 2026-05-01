@@ -69,6 +69,13 @@ name = "turret"
 path = "src/main.rs"
 required-features = ["cli", "daemon"]
 
+# End-to-end smoke for the MAVLink inbound path + attitude broadcast.
+# Skipped automatically when the `daemon` feature is off (e.g. lean-lib
+# CI gate).
+[[test]]
+name = "mavlink_smoke"
+required-features = ["daemon"]
+
 # Library-wide lint floor. See `clippy.toml` for the configuration list
 # that backs `disallowed_types`. `forbid` is used wherever no exception
 # exists in the entire package (lib + bin + tests); inner attributes
