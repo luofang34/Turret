@@ -1,6 +1,6 @@
 [package]
 name = "turret"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["luofang@luofang.org"]
 description = "MAVLink Gimbal Manager and CLI for STorM32 RC Commands gimbals"
@@ -19,7 +19,6 @@ rust-version = "1.74"
 # Source files that ARE compiled live under src/ and are included by default;
 # this list only filters auxiliary docs / scripts at the repo root.
 exclude = [
-    "REFACTORING_PLAN.md",
     "test_daemon.sh",
     "systemd/**",
     ".github/**",

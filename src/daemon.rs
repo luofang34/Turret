@@ -95,6 +95,13 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
     // consecutive read failures; the reconnect task takes over from there.
     let notify_lost = Arc::new(Notify::new());
 
+    // Pinged by `spawn_critical` whenever a tracked task exits — for any
+    // reason. The main loop selects on this alongside SIGINT/SIGTERM so a
+    // half-running daemon (e.g. MAVLink failed to bind, IPC socket bind
+    // failed) doesn't sit there reporting healthy until something else
+    // kicks it.
+    let task_died = Arc::new(Notify::new());
+
     // Track every long-lived task so SIGTERM / SIGINT can drain them with a
     // bounded grace window instead of letting the runtime drop kill them
     // mid-syscall.
@@ -108,12 +115,9 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         let gimbal = gimbal_shared.clone();
         let state = state_manager.clone();
         let configured_path = config.device.path.clone();
-        tasks.push((
-            "reconnect",
-            tokio::spawn(async move {
-                reconnect_task(notify, gimbal, state, configured_path).await;
-            }),
-        ));
+        spawn_critical(&mut tasks, "reconnect", &task_died, async move {
+            reconnect_task(notify, gimbal, state, configured_path).await;
+        });
     }
 
     // Start IPC server
@@ -122,15 +126,12 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
     let ipc_config = config.ipc.clone();
     let ipc_socket_path = ipc_config.socket_path.clone();
 
-    tasks.push((
-        "ipc",
-        tokio::spawn(async move {
-            let server = IpcServer::new(ipc_config, ipc_state, ipc_gimbal);
-            if let Err(e) = server.start().await {
-                error!("IPC server error: {}", e);
-            }
-        }),
-    ));
+    spawn_critical(&mut tasks, "ipc", &task_died, async move {
+        let server = IpcServer::new(ipc_config, ipc_state, ipc_gimbal);
+        if let Err(e) = server.start().await {
+            error!("IPC server error: {}", e);
+        }
+    });
 
     // Start MAVLink manager if enabled
     if config.mavlink.enabled {
@@ -139,27 +140,57 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         let mavlink_cfg = config.mavlink.clone();
         let mavlink_notify_lost = notify_lost.clone();
 
-        tasks.push((
-            "mavlink",
-            tokio::spawn(async move {
-                let manager =
-                    MavlinkManager::new(mavlink_state, mavlink_gimbal, mavlink_notify_lost);
-                if let Err(e) = manager.start(mavlink_cfg).await {
-                    error!("MAVLink manager error: {}", e);
-                }
-            }),
-        ));
+        spawn_critical(&mut tasks, "mavlink", &task_died, async move {
+            let manager = MavlinkManager::new(mavlink_state, mavlink_gimbal, mavlink_notify_lost);
+            if let Err(e) = manager.start(mavlink_cfg).await {
+                error!("MAVLink manager error: {}", e);
+            }
+        });
     }
 
     info!("Daemon started successfully");
 
-    let signal_name = wait_for_shutdown_signal().await?;
-    info!("Received {}, beginning bounded shutdown...", signal_name);
+    tokio::select! {
+        res = wait_for_shutdown_signal() => {
+            let name = res?;
+            info!("Received {}, beginning bounded shutdown...", name);
+        }
+        _ = task_died.notified() => {
+            warn!("A critical task exited unexpectedly; initiating shutdown...");
+        }
+    }
     drain_tasks(tasks).await;
     cleanup_ipc_socket(&ipc_socket_path);
     info!("Daemon stopped");
 
     Ok(())
+}
+
+/// Spawn a task whose exit — clean or otherwise — should trigger daemon
+/// shutdown. Wraps the inner future so it pings `task_died` after it
+/// completes, then stores the resulting `JoinHandle` in `tasks` for
+/// later abort + drain.
+///
+/// Used for `reconnect`, `ipc`, and `mavlink`. If any of these returns
+/// (the IPC accept loop hit an unrecoverable error, MAVLink failed to
+/// bind, etc.) the main loop wakes up and drains the rest instead of
+/// reporting healthy with half the daemon dead.
+fn spawn_critical<F>(
+    tasks: &mut Vec<(&'static str, JoinHandle<()>)>,
+    name: &'static str,
+    task_died: &Arc<Notify>,
+    fut: F,
+) where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let died = task_died.clone();
+    tasks.push((
+        name,
+        tokio::spawn(async move {
+            fut.await;
+            died.notify_one();
+        }),
+    ));
 }
 
 /// Abort every tracked task, then wait up to [`SHUTDOWN_GRACE`] for each to
