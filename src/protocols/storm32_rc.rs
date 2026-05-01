@@ -9,6 +9,8 @@
 //! for [`Storm32Gimbal`] so callers of the library trait never need to name
 //! the submodules directly.
 
+#[path = "storm32_rc/commands.rs"]
+mod commands;
 #[path = "storm32_rc/driver.rs"]
 mod driver;
 #[path = "storm32_rc/error.rs"]
