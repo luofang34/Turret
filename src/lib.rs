@@ -28,9 +28,9 @@
 //! - **`daemon`** (default) — pulls in tokio, the IPC server, the MAVLink
 //!   Gimbal Manager, and the `daemon` module. Disable with
 //!   `default-features = false` to use this crate as a lean Storm32 driver
-//!   (just `serialport`, `thiserror`, `log`, and `serde`).
-//! - **`cli`** (default) — pulls in clap / env_logger / anyhow for the
-//!   `turret` binary. The bin target requires both `cli` and `daemon`.
+//!   (just `serialport`, `thiserror`, `tracing`, and `serde`).
+//! - **`cli`** (default) — pulls in `clap` and `tracing-subscriber` for
+//!   the `turret` binary. The bin target requires both `cli` and `daemon`.
 
 // Crate-level lint floor (`forbid(unsafe_code)`, `deny(clippy::unwrap_used)`,
 // etc.) lives in `Cargo.toml [lints]`. Tests opt out per `mod tests` block

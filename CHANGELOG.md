@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **GIMBAL_DEVICE_ATTITUDE_STATUS broadcast** — 4 Hz attitude poll +
+  per-peer fan-out. GCSs now see real measured pose instead of nothing.
+- **`COMMS_ERROR` health flag** — set on the next successful broadcast
+  for ~1 s after any failed poll, so flaky links don't masquerade as
+  healthy.
+- **Hot-plug recovery** — daemon-level reconnect task: on 8 consecutive
+  attitude-poll failures, scans (or re-opens the configured path) with
+  exponential backoff and swaps the new gimbal into the shared slot
+  without restart.
+- **Bounded shutdown** — SIGTERM and SIGINT both caught (Unix); each
+  tracked task gets a 2 s grace before `JoinHandle::abort`; IPC socket
+  file removed on exit.
+- **Critical-task supervision** — IPC / MAVLink / reconnect each
+  notify a shared `task_died` on exit, and `run_daemon` shuts down
+  the rest instead of reporting healthy.
+- **`MAV_CMD_REQUEST_MESSAGE` handling** — GCS discovery for IDs 280
+  (`GIMBAL_MANAGER_INFORMATION`) and 281 (`GIMBAL_MANAGER_STATUS`).
+- **Per-axis `target_component` validation** — frame addressed to e.g.
+  the autopilot on the same sysid is no longer acted on by the gimbal
+  manager.
+- **`tracing` for diagnostics** — replaces `log`, with `#[instrument]`
+  on dispatch hotspots.
+- **`tests/mavlink_smoke.rs`** — end-to-end SET_PITCHYAW round-trip
+  via UDP, verifies inbound dispatch + arbitrator + attitude broadcast
+  in ~250 ms.
+
+### Changed
+- **MSRV bumped to 1.74** (required for `Cargo.toml [lints]` tables).
+- **`MavlinkConfig::transport`** is now `enum Transport { Udp }` —
+  YAML typos caught at config-load time. `serial_device` field
+  (placeholder) removed.
+- **Lean library trims to 4 direct deps**: `serde`, `serialport`,
+  `thiserror`, `tracing`. The `cli` feature drops `dep:anyhow`
+  entirely; `main.rs` uses `turret::Error` end-to-end.
+- **Lints lifted to `Cargo.toml [lints]`**: `forbid` on
+  `unsafe_code` / `disallowed_types` / `await_holding_lock` /
+  `let_underscore_*`; `deny` on `unwrap_used` / `expect_used` /
+  `panic`. `missing_docs` enforced as `deny`.
+- **Storm32 yaw decode fixed** — IMU1ANGLES payload was off-by-one
+  and dropped the yaw axis; now reads all three.
+- **Files reorganized**: `handlers.rs` (was 870 lines) split into
+  `handlers/{build,inbound,loops}.rs`; `driver.rs` (was 518) split
+  into `driver.rs` + `commands.rs`. Every file under 500 lines.
+- **`broadcast_to_peers`** helper consolidates the heartbeat /
+  status / attitude broadcast fan-out.
+
+### Removed
+- Six orphan files (TOML config + client-side MAVLink driver).
+- `MavlinkManager._config` dead field, `cleanup_stale_commands` /
+  `clear_stale_commands` dead method pair, `serial_device` config
+  field.
+- `async-trait` direct dependency.
+
+### Fixed
+- `MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE` now writes primary/secondary
+  control ownership and broadcasts it via `GIMBAL_MANAGER_STATUS`.
+- `time_boot_ms` on `GIMBAL_MANAGER_INFORMATION` is now real, not 0.
+- `RxCtx` carries `start_time` so on-demand frames have correct
+  uptime.
+
 ## [0.1.1] - 2025-09-30
 
 ### Added

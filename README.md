@@ -90,6 +90,18 @@ mavlink:
 
 **Priority System**: MAVLink autopilot (highest) > GCS > Unix socket > CLI (lowest)
 
+**Daemon behavior**:
+- 1 Hz `HEARTBEAT` (advertises `MAV_TYPE_GIMBAL` on `MAV_COMP_ID_GIMBAL`)
+- 5 Hz `GIMBAL_MANAGER_STATUS`, broadcast to every recorded peer
+- 4 Hz attitude poll → `GIMBAL_DEVICE_ATTITUDE_STATUS` broadcast.
+  `COMMS_ERROR` flag is set for ~1 s after any failed poll.
+- 8 consecutive poll failures → automatic reconnect (scan + reopen,
+  exponential backoff to 10 s).
+- `SIGTERM` / `SIGINT` start a 2 s grace shutdown; in-flight tasks are
+  drained, then aborted; the IPC socket file is removed.
+- A critical task exiting unexpectedly (IPC, MAVLink, reconnect) tears
+  the daemon down instead of leaving it half-running.
+
 ## Develop
 With a recent [Rust](https://rustup.rs) installed:
 ```bash
