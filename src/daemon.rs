@@ -142,12 +142,8 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         tasks.push((
             "mavlink",
             tokio::spawn(async move {
-                let manager = MavlinkManager::new(
-                    mavlink_cfg.clone(),
-                    mavlink_state,
-                    mavlink_gimbal,
-                    mavlink_notify_lost,
-                );
+                let manager =
+                    MavlinkManager::new(mavlink_state, mavlink_gimbal, mavlink_notify_lost);
                 if let Err(e) = manager.start(mavlink_cfg).await {
                     error!("MAVLink manager error: {}", e);
                 }

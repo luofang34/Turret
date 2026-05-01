@@ -79,11 +79,6 @@ impl Arbitrator {
 
         Ok(true)
     }
-
-    /// Clear stale commands periodically
-    pub fn cleanup_stale_commands(&self) {
-        self.state_manager.clear_stale_commands();
-    }
 }
 
 #[cfg(test)]

@@ -32,18 +32,27 @@ pub struct IpcConfig {
     pub socket_path: String,
 }
 
+/// Wire transport for the MAVLink link. Only [`Transport::Udp`] is wired
+/// up today; serial / TCP transports will land here additively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    /// UDP datagram transport on `0.0.0.0:<udp_port>` — every packet's
+    /// source address gets recorded as a peer for subsequent broadcasts.
+    #[default]
+    Udp,
+}
+
 /// MAVLink Gimbal Manager runtime settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MavlinkConfig {
     /// Enable the MAVLink Gimbal Manager. When `false`, no UDP socket is bound.
     pub enabled: bool,
-    /// Transport type. Currently only `"udp"` is implemented.
-    pub transport: String,
-    /// UDP port (when `transport == "udp"`).
-    pub udp_port: u16,
-    /// Serial device for the eventual serial MAVLink transport.
+    /// Wire transport — see [`Transport`].
     #[serde(default)]
-    pub serial_device: Option<String>,
+    pub transport: Transport,
+    /// UDP port (when `transport == Transport::Udp`).
+    pub udp_port: u16,
     /// MAVLink system ID this manager advertises in HEARTBEAT.
     pub sysid: u8,
     /// MAVLink component ID — typically 154 (`MAV_COMP_ID_GIMBAL`).
@@ -107,9 +116,8 @@ impl Default for DaemonConfig {
             },
             mavlink: MavlinkConfig {
                 enabled: true,
-                transport: "udp".to_string(),
+                transport: Transport::Udp,
                 udp_port: 14550,
-                serial_device: None,
                 sysid: 1,
                 compid: 154, // MAV_COMP_ID_GIMBAL
                 limits: GimbalLimits::default(),
