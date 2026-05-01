@@ -2,9 +2,12 @@
 //! command, primary/secondary control ownership. All access goes through
 //! `parking_lot::RwLock` so a panicking writer can't poison readers.
 
-use super::models::{GimbalCommand, GimbalState, PrimaryControl};
+use super::models::{ControlSource, GimbalCommand, GimbalState, PrimaryControl};
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tracing::warn;
 
 /// Thread-safe gimbal state manager.
 ///
@@ -15,17 +18,34 @@ pub struct StateManager {
     state: Arc<RwLock<GimbalState>>,
     last_command: Arc<RwLock<Option<GimbalCommand>>>,
     primary_control: Arc<RwLock<PrimaryControl>>,
+    /// When each `ControlSource` last had a command accepted. Used by
+    /// the per-source rate limiter inside [`Self::set_command`]. Empty
+    /// map + `min_command_interval == ZERO` means "no throttle".
+    last_command_at: Arc<RwLock<HashMap<ControlSource, Instant>>>,
+    /// Minimum delta between two accepted commands from the same source.
+    /// `Duration::ZERO` disables the check.
+    min_command_interval: Duration,
 }
 
 impl StateManager {
-    /// Construct a fresh state manager with default zero values. Cheap to
-    /// `clone()` — the inner state is `Arc<RwLock<...>>` so all clones share
-    /// the same underlying buffers.
+    /// Construct a fresh state manager with default zero values and no
+    /// per-source rate limit. Cheap to `clone()` — the inner state is
+    /// `Arc<RwLock<...>>` so all clones share the same underlying buffers.
     pub fn new() -> Self {
+        Self::with_min_command_interval(Duration::ZERO)
+    }
+
+    /// Construct a state manager with a per-source rate-limit floor.
+    /// Two commands from the same `ControlSource` within `interval` will
+    /// see the second one rejected by [`Self::set_command`]. `ZERO`
+    /// disables the check (matching [`Self::new`]).
+    pub fn with_min_command_interval(interval: Duration) -> Self {
         Self {
             state: Arc::new(RwLock::new(GimbalState::default())),
             last_command: Arc::new(RwLock::new(None)),
             primary_control: Arc::new(RwLock::new(PrimaryControl::default())),
+            last_command_at: Arc::new(RwLock::new(HashMap::new())),
+            min_command_interval: interval,
         }
     }
 
@@ -66,9 +86,18 @@ impl StateManager {
         self.last_command.read().clone()
     }
 
-    /// Set last command (with arbitration check)
-    /// Returns true if command was accepted (higher or equal priority)
+    /// Run a command through arbitration: per-source rate limit first,
+    /// then the priority check. Returns `true` if accepted (in which case
+    /// the command becomes the new `last_command` and the source's
+    /// `last_command_at` advances).
+    ///
+    /// The rate-limit check runs on its own lock so the (more contended)
+    /// `last_command` lock isn't held across the time arithmetic.
     pub fn set_command(&self, command: GimbalCommand) -> bool {
+        if !self.check_and_record_rate(&command.source) {
+            return false;
+        }
+
         let mut last_cmd = self.last_command.write();
 
         // Check if new command has higher priority than current
@@ -97,6 +126,41 @@ impl StateManager {
         } else {
             false
         }
+    }
+
+    /// Per-source rate-limit check. Returns `true` if the command is
+    /// allowed to proceed; on `false` the command is rejected before the
+    /// priority arbitration sees it.
+    ///
+    /// On `true` the source's `last_command_at` advances to `now`. The
+    /// check is no-op when `min_command_interval == ZERO`. Different
+    /// sources are tracked independently — a noisy autopilot doesn't
+    /// throttle an IPC client.
+    ///
+    /// Map growth: bounded by the number of distinct `ControlSource`s
+    /// the daemon has ever seen. `Mavlink(u8)` caps at 256, `Cli` is one,
+    /// `UnixSocket(u32)` grows over time. For long-running daemons that
+    /// serve thousands of IPC clients this should grow eviction; for
+    /// now it's an accepted slow leak.
+    fn check_and_record_rate(&self, source: &ControlSource) -> bool {
+        if self.min_command_interval.is_zero() {
+            return true;
+        }
+        let now = Instant::now();
+        let mut map = self.last_command_at.write();
+        if let Some(prev) = map.get(source) {
+            if now.duration_since(*prev) < self.min_command_interval {
+                warn!(
+                    "Rate-limited command from {:?}: {} ms since last (min {} ms)",
+                    source,
+                    now.duration_since(*prev).as_millis(),
+                    self.min_command_interval.as_millis(),
+                );
+                return false;
+            }
+        }
+        map.insert(source.clone(), now);
+        true
     }
 
     /// Current primary/secondary control ownership.
@@ -171,6 +235,93 @@ mod tests {
         assert_eq!(state.pitch, 20.0);
         assert_eq!(state.roll, 30.0);
         assert!(state.measured_at.is_some());
+    }
+
+    #[test]
+    fn rate_limit_disabled_by_default() {
+        // `StateManager::new` constructs with ZERO interval — the
+        // rate-limit branch returns `true` immediately. The 1 ms gap
+        // between commands guarantees each `GimbalCommand`'s
+        // `SystemTime::now()` is strictly later than the previous one,
+        // so the existing same-priority-same-source priority check
+        // (which requires `command.timestamp > prev.timestamp`) doesn't
+        // contaminate this test.
+        let manager = StateManager::new();
+        let cmd = || {
+            GimbalCommand::new(
+                ControlSource::Cli,
+                CommandMode::Position,
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+            )
+        };
+        assert!(manager.set_command(cmd()));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        assert!(manager.set_command(cmd()));
+    }
+
+    #[test]
+    fn rate_limit_blocks_back_to_back_same_source() {
+        let manager = StateManager::with_min_command_interval(std::time::Duration::from_millis(50));
+        let cmd = || {
+            GimbalCommand::new(
+                ControlSource::Mavlink(1),
+                CommandMode::Position,
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+            )
+        };
+        // First accepted; second within 50 ms rejected.
+        assert!(manager.set_command(cmd()));
+        assert!(!manager.set_command(cmd()));
+    }
+
+    #[test]
+    fn rate_limit_isolates_per_source() {
+        // A noisy GCS must not throttle a different GCS. We use two
+        // distinct same-priority MAVLink sources (`Mavlink(2)` and
+        // `Mavlink(3)`, both priority 50) so the priority arbitration
+        // doesn't reject the second command for unrelated reasons —
+        // this test isolates the rate-limit dimension specifically.
+        let manager =
+            StateManager::with_min_command_interval(std::time::Duration::from_millis(500));
+        let cmd_from = |sysid: u8| {
+            GimbalCommand::new(
+                ControlSource::Mavlink(sysid),
+                CommandMode::Position,
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+            )
+        };
+        assert!(manager.set_command(cmd_from(2)));
+        // Same-source second command is rate-limited …
+        assert!(!manager.set_command(cmd_from(2)));
+        // … but a different source at the same priority goes through.
+        assert!(manager.set_command(cmd_from(3)));
+    }
+
+    #[test]
+    fn rate_limit_clears_after_interval() {
+        let interval = std::time::Duration::from_millis(20);
+        let manager = StateManager::with_min_command_interval(interval);
+        let cmd = || {
+            GimbalCommand::new(
+                ControlSource::Cli,
+                CommandMode::Position,
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+            )
+        };
+        assert!(manager.set_command(cmd()));
+        // Sleep a hair past the window and the same source goes through
+        // again. Cheap real-time dependency: 20 ms test interval, 60 ms
+        // sleep gives 3× margin against scheduler jitter on slow CI.
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(manager.set_command(cmd()));
     }
 
     #[test]

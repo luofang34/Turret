@@ -78,8 +78,12 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
     let mut gimbal = gimbal::detect_gimbal(&device_path)?;
     info!("Detected protocol: {}", gimbal.protocol_name());
 
-    // Create shared state manager
-    let state_manager = StateManager::new();
+    // Create shared state manager. The arbitrator config knob (per-source
+    // rate limit) flows through the constructor; ZERO disables the
+    // throttle, matching `StateManager::new`.
+    let state_manager = StateManager::with_min_command_interval(Duration::from_millis(u64::from(
+        config.arbitrator.min_command_interval_ms,
+    )));
 
     // Get firmware version and update state
     if let Ok(version) = gimbal.get_version() {

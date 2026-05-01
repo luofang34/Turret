@@ -16,6 +16,29 @@ pub struct DaemonConfig {
     pub mavlink: MavlinkConfig,
     /// Tracing subscriber settings.
     pub logging: LoggingConfig,
+    /// Command arbitration tuning (priority + per-source rate limit).
+    #[serde(default)]
+    pub arbitrator: ArbitratorConfig,
+}
+
+/// Command arbitrator tuning.
+///
+/// Today this carries only the per-source rate limit. Priority itself is
+/// hard-coded into [`crate::daemon::models::ControlSource::priority`] —
+/// raising sysid-1 (autopilot) above other MAVLink components above IPC
+/// above CLI is a policy choice the YAML doesn't override.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct ArbitratorConfig {
+    /// Minimum interval between commands from the *same* `ControlSource`,
+    /// in milliseconds. A second command from the same source within this
+    /// window is rejected before reaching the gimbal. `0` (the default)
+    /// disables the throttle.
+    ///
+    /// 50 ms (= 20 Hz) is a reasonable starting point for a runaway-GCS
+    /// guard without affecting human-driven workflows. Different sources
+    /// (autopilot vs IPC vs CLI) are tracked independently.
+    #[serde(default)]
+    pub min_command_interval_ms: u32,
 }
 
 /// Where to find the gimbal hardware.
@@ -125,6 +148,7 @@ impl Default for DaemonConfig {
             logging: LoggingConfig {
                 level: "info".to_string(),
             },
+            arbitrator: ArbitratorConfig::default(),
         }
     }
 }
