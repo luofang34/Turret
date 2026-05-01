@@ -90,10 +90,10 @@ impl MavlinkManager {
     /// Start UDP MAVLink transport: bind socket, spawn broadcast loops,
     /// then run the main receive loop.
     async fn start_udp(self, config: MavlinkConfig) -> crate::error::Result<()> {
-        let bind_addr = format!("0.0.0.0:{}", config.udp_port);
+        let bind_addr = SocketAddr::new(config.bind_addr, config.udp_port);
         info!("Starting MAVLink manager on UDP {}", bind_addr);
 
-        let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
+        let socket = Arc::new(UdpSocket::bind(bind_addr).await?);
         info!("MAVLink UDP socket bound to {}", bind_addr);
 
         // 1 Hz HEARTBEAT — announces us as MAV_TYPE_GIMBAL so any GCS that

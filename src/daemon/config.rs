@@ -3,7 +3,14 @@
 //! missing or malformed.
 
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
+
+/// Default `bind_addr` if the YAML omits it: `0.0.0.0` (all interfaces).
+/// Matches the historical behavior so existing configs are unaffected.
+fn default_bind_addr() -> IpAddr {
+    IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+}
 
 /// Top-level daemon config shape — one section per long-lived component.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +67,7 @@ pub struct IpcConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Transport {
-    /// UDP datagram transport on `0.0.0.0:<udp_port>` — every packet's
+    /// UDP datagram transport on `<bind_addr>:<udp_port>` — every packet's
     /// source address gets recorded as a peer for subsequent broadcasts.
     #[default]
     Udp,
@@ -74,6 +81,12 @@ pub struct MavlinkConfig {
     /// Wire transport — see [`Transport`].
     #[serde(default)]
     pub transport: Transport,
+    /// Local interface to bind. Defaults to `0.0.0.0` (all interfaces).
+    /// Set to `127.0.0.1` for loopback-only deployments where the firewall
+    /// rules don't cover MAVLink, or to a specific interface address when
+    /// running multi-homed.
+    #[serde(default = "default_bind_addr")]
+    pub bind_addr: IpAddr,
     /// UDP port (when `transport == Transport::Udp`).
     pub udp_port: u16,
     /// MAVLink system ID this manager advertises in HEARTBEAT.
@@ -140,6 +153,7 @@ impl Default for DaemonConfig {
             mavlink: MavlinkConfig {
                 enabled: true,
                 transport: Transport::Udp,
+                bind_addr: default_bind_addr(),
                 udp_port: 14550,
                 sysid: 1,
                 compid: 154, // MAV_COMP_ID_GIMBAL

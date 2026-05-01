@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Configurable MAVLink bind interface** — new `mavlink.bind_addr`
+  YAML field (typed `IpAddr`, default `0.0.0.0`). Loopback-only
+  deployments can set `127.0.0.1`; multi-homed boxes can pin a
+  specific interface. Existing configs without the field default
+  to the historical `0.0.0.0` behavior.
 - **Per-source command rate limit** — new `arbitrator.min_command_interval_ms`
   YAML knob (default 0 = disabled). Two commands from the same
   `ControlSource` within the window are rejected before reaching the

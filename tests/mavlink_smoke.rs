@@ -22,7 +22,7 @@
 
 use mavlink::ardupilotmega::{GimbalManagerFlags, MavMessage, GIMBAL_MANAGER_SET_PITCHYAW_DATA};
 use mavlink::{read_v2_msg, write_v2_msg, MavHeader};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
@@ -121,9 +121,13 @@ async fn set_pitchyaw_round_trips_through_attitude_status_broadcast() {
     let port = pick_free_udp_port().await;
     let our_sysid = 1u8;
     let our_compid = 154u8;
+    // Bind loopback-only so the test never touches the host's external
+    // interfaces, and so concurrent test processes on the same machine
+    // don't compete for the port range outside 127.0.0.1.
     let config = MavlinkConfig {
         enabled: true,
         transport: Transport::Udp,
+        bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
         udp_port: port,
         sysid: our_sysid,
         compid: our_compid,
