@@ -53,8 +53,9 @@ impl PanMode {
 }
 
 /// Where a gimbal command came from. Used by [`ControlSource::priority`] to
-/// decide whether a newly arrived command preempts the in-flight one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// decide whether a newly arrived command preempts the in-flight one, and
+/// hashed by the per-source rate limiter in `StateManager`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ControlSource {
     /// IPC client connected to the Unix socket. The `u32` is an
     /// IPC-server-assigned client id, monotonic per daemon run.

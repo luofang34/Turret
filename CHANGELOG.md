@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Per-source command rate limit** — new `arbitrator.min_command_interval_ms`
+  YAML knob (default 0 = disabled). Two commands from the same
+  `ControlSource` within the window are rejected before reaching the
+  gimbal; different sources are tracked independently. Defends the
+  serial bus against a runaway GCS or buggy IPC client without
+  affecting normal traffic.
 - **GIMBAL_DEVICE_ATTITUDE_STATUS broadcast** — 4 Hz attitude poll +
   per-peer fan-out. GCSs now see real measured pose instead of nothing.
 - **`COMMS_ERROR` health flag** — set on the next successful broadcast
