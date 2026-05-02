@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gate: [fmt, clippy, test, doc, release-build, lib-no-default]
+        gate: [fmt, clippy, test, doc, release-build, lib-no-default, publish-dryrun]
     steps:
       - uses: actions/checkout@v6
 
@@ -88,3 +88,14 @@ jobs:
         run: |
           cargo clippy --locked --no-default-features --lib -- -D warnings
           cargo doc --locked --no-default-features --no-deps
+
+      # `cargo publish --dry-run` validates Cargo.toml metadata, packages
+      # the crate as a tarball, and rebuilds it from the tarball — catching
+      # missing `package.exclude` entries, broken doctest imports under the
+      # tarball file set, or stale `description / license / repository`
+      # fields BEFORE a real release. The "already exists on crates.io"
+      # warning is expected until the version is bumped; it doesn't fail
+      # the gate.
+      - name: publish dry-run
+        if: matrix.gate == 'publish-dryrun'
+        run: cargo publish --dry-run --locked

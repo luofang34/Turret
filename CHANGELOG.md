@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`cargo publish --dry-run` CI gate** — runs alongside fmt / clippy /
+  test / doc / release-build / lib-no-default. Catches Cargo.toml
+  metadata regressions (broken `package.exclude`, stale
+  `description / license / repository`, missing `readme`, etc.) and
+  verifies the tarball file set still builds — before a real release
+  attempt. Local `cargo publish --dry-run` confirmed 34 files
+  packaged, none of `test_daemon.sh / systemd/ / .github/` leaked.
 - **Embedded-API documentation** — module-level rustdoc on
   `turret::daemon` now includes a worked example for users who want
   to wire `MavlinkManager` against their own `dyn GimbalDevice`
