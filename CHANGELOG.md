@@ -99,6 +99,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status / attitude broadcast fan-out.
 
 ### Removed
+- **IPC Storm32-specific commands** (`pitch / roll / yaw / version-str`).
+  These bypassed the `GimbalDevice` trait via `as_any_mut().downcast_mut::<Storm32RC>()`
+  and silently failed with "requires Storm32 device" for any future
+  protocol. Equivalent functionality remains in the CLI (which talks
+  to the driver directly): `turret pitch <value> / roll / yaw /
+  version-str`. IPC clients that need partial-axis updates should
+  read `status` and resend a full `set` instead.
 - Six orphan files (TOML config + client-side MAVLink driver).
 - `MavlinkManager._config` dead field, `cleanup_stale_commands` /
   `clear_stale_commands` dead method pair, `serial_device` config

@@ -7,7 +7,6 @@ use super::config::IpcConfig;
 use super::models::{CommandMode, ControlSource, GimbalCommand, IpcCommand, IpcResponse, PanMode};
 use super::state::StateManager;
 use crate::gimbal::GimbalDevice;
-use crate::protocols::storm32_rc::Storm32RC;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -216,86 +215,6 @@ impl IpcServer {
                 }
             }
 
-            IpcCommand::VersionStr => {
-                let mut gimbal_guard = gimbal.lock().await;
-                if let Some(storm32) = gimbal_guard
-                    .as_any_mut()
-                    .and_then(|a| a.downcast_mut::<Storm32RC>())
-                {
-                    match storm32.get_version_string() {
-                        Ok(version) => {
-                            let data = serde_json::json!({ "version_string": version });
-                            IpcResponse::ok_with_data(data)
-                        }
-                        Err(e) => {
-                            IpcResponse::error(format!("Failed to get version string: {}", e))
-                        }
-                    }
-                } else {
-                    IpcResponse::error("Command requires Storm32 device".to_string())
-                }
-            }
-
-            IpcCommand::Pitch { value } => {
-                let mut gimbal_guard = gimbal.lock().await;
-                if let Some(storm32) = gimbal_guard
-                    .as_any_mut()
-                    .and_then(|a| a.downcast_mut::<Storm32RC>())
-                {
-                    let result = if value == 0 {
-                        storm32.recenter_pitch()
-                    } else {
-                        storm32.set_pitch(value)
-                    };
-                    match result {
-                        Ok(_) => IpcResponse::ok(),
-                        Err(e) => IpcResponse::error(format!("Failed to set pitch: {}", e)),
-                    }
-                } else {
-                    IpcResponse::error("Command requires Storm32 device".to_string())
-                }
-            }
-
-            IpcCommand::Roll { value } => {
-                let mut gimbal_guard = gimbal.lock().await;
-                if let Some(storm32) = gimbal_guard
-                    .as_any_mut()
-                    .and_then(|a| a.downcast_mut::<Storm32RC>())
-                {
-                    let result = if value == 0 {
-                        storm32.recenter_roll()
-                    } else {
-                        storm32.set_roll(value)
-                    };
-                    match result {
-                        Ok(_) => IpcResponse::ok(),
-                        Err(e) => IpcResponse::error(format!("Failed to set roll: {}", e)),
-                    }
-                } else {
-                    IpcResponse::error("Command requires Storm32 device".to_string())
-                }
-            }
-
-            IpcCommand::Yaw { value } => {
-                let mut gimbal_guard = gimbal.lock().await;
-                if let Some(storm32) = gimbal_guard
-                    .as_any_mut()
-                    .and_then(|a| a.downcast_mut::<Storm32RC>())
-                {
-                    let result = if value == 0 {
-                        storm32.recenter_yaw()
-                    } else {
-                        storm32.set_yaw(value)
-                    };
-                    match result {
-                        Ok(_) => IpcResponse::ok(),
-                        Err(e) => IpcResponse::error(format!("Failed to set yaw: {}", e)),
-                    }
-                } else {
-                    IpcResponse::error("Command requires Storm32 device".to_string())
-                }
-            }
-
             IpcCommand::PanMode { mode } => {
                 if let Some(pan_mode) = PanMode::from_u8(mode) {
                     let mut gimbal_guard = gimbal.lock().await;
@@ -329,10 +248,6 @@ impl IpcServer {
                         {"cmd": "center"},
                         {"cmd": "status"},
                         {"cmd": "version"},
-                        {"cmd": "version-str"},
-                        {"cmd": "pitch", "params": {"value": "u16"}},
-                        {"cmd": "roll", "params": {"value": "u16"}},
-                        {"cmd": "yaw", "params": {"value": "u16"}},
                         {"cmd": "pan-mode", "params": {"mode": "u8"}},
                         {"cmd": "standby", "params": {"enable": "bool"}},
                         {"cmd": "help"},
