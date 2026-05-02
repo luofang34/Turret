@@ -30,11 +30,28 @@ jobs:
           components: rustfmt, clippy
 
       # serialport → libudev-sys needs pkg-config + libudev headers.
+      # Wrap apt in a retry loop because the GitHub-Actions Ubuntu runners
+      # periodically can't reach `azure.archive.ubuntu.com` (DNS / mirror
+      # outages lasting tens of minutes). Five attempts with exponential
+      # backoff give up to ~15 min total wait, longer than typical
+      # transient outages but well inside the GA-hosted-runner job limit.
       - name: Install libudev
         if: matrix.gate != 'fmt'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libudev-dev
+          set +e
+          for attempt in 1 2 3 4 5; do
+            sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev
+            result=$?
+            if [ $result -eq 0 ]; then
+              echo "apt install succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            sleep_for=$((attempt * 60))
+            echo "apt install failed on attempt ${attempt} (exit ${result}); sleeping ${sleep_for}s"
+            sleep ${sleep_for}
+          done
+          echo "apt install failed after 5 attempts — Azure mirror likely down for an extended outage"
+          exit 1
 
       - uses: Swatinem/rust-cache@v2
         if: matrix.gate != 'fmt'
