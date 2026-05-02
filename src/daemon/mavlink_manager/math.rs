@@ -83,6 +83,41 @@ pub(super) fn euler_deg_to_quaternion_wxyz(
     ]
 }
 
+/// One-shot integration of a rate command into a position target.
+///
+/// `current_deg` is the current commanded (or measured) angle for one
+/// axis. `rate_deg_per_s` is the commanded angular velocity. `dt` is
+/// the elapsed time since the previous rate tick from the same source
+/// (clamped by the caller — see [`clamp_rate_dt`]).
+///
+/// Returns `current_deg + rate_deg_per_s * dt`. Caller is responsible
+/// for clamping the result to the configured device limits.
+///
+/// STorM32 has no native rate command, so the manager simulates it by
+/// resending position commands as the GCS streams rate ticks. With the
+/// MAVLink spec's typical 10–50 Hz rate-command cadence this gives a
+/// usable joystick experience without a closed-loop rate controller.
+pub(super) fn compute_rate_target_deg(current_deg: f32, rate_deg_per_s: f32, dt: f32) -> f32 {
+    if !rate_deg_per_s.is_finite() || rate_deg_per_s == 0.0 {
+        return current_deg;
+    }
+    current_deg + rate_deg_per_s * dt
+}
+
+/// Clamp the inter-tick `dt` between 10 ms and 500 ms.
+///
+/// Lower bound: a too-short tick (rapid GCS retransmits) collapses the
+/// integration step toward zero and the gimbal stops moving — pin to
+/// 10 ms (= 100 Hz) so even a high-rate stream still produces motion.
+/// Upper bound: a too-long tick (GCS dropped a packet, daemon was
+/// blocked) produces a huge jump — pin to 500 ms so a recovered stream
+/// doesn't snap the gimbal across half a second of accumulated rate.
+pub(super) fn clamp_rate_dt(dt: std::time::Duration) -> std::time::Duration {
+    const MIN: std::time::Duration = std::time::Duration::from_millis(10);
+    const MAX: std::time::Duration = std::time::Duration::from_millis(500);
+    dt.clamp(MIN, MAX)
+}
+
 /// Convert a `COMMAND_LONG` param (`f32`) to a MAVLink sysid/compid byte.
 ///
 /// The MAVLink v2 spec reserves negative values (-3, -2, -1) for special
@@ -107,6 +142,52 @@ pub(super) fn to_id_byte(v: f32) -> u8 {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compute_rate_target_integrates_constant_rate() {
+        // 30°/s × 0.1 s = +3°
+        let target = compute_rate_target_deg(10.0, 30.0, 0.1);
+        assert!((target - 13.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn compute_rate_target_negative_rate_decreases() {
+        // -45°/s × 0.2 s = -9° from 5° = -4°
+        let target = compute_rate_target_deg(5.0, -45.0, 0.2);
+        assert!((target - -4.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn compute_rate_target_zero_rate_is_noop() {
+        assert_eq!(compute_rate_target_deg(42.0, 0.0, 0.5), 42.0);
+    }
+
+    #[test]
+    fn compute_rate_target_nan_rate_is_noop() {
+        // NaN rate per spec means "leave axis alone" — the rate path
+        // collapses to the existing position. Important so a
+        // partial-axis rate command (e.g. only yaw) doesn't drag the
+        // unaffected axes off their current targets.
+        assert_eq!(compute_rate_target_deg(42.0, f32::NAN, 0.5), 42.0);
+    }
+
+    #[test]
+    fn clamp_rate_dt_pins_below_min() {
+        let clamped = clamp_rate_dt(std::time::Duration::from_micros(1));
+        assert_eq!(clamped, std::time::Duration::from_millis(10));
+    }
+
+    #[test]
+    fn clamp_rate_dt_pins_above_max() {
+        let clamped = clamp_rate_dt(std::time::Duration::from_secs(5));
+        assert_eq!(clamped, std::time::Duration::from_millis(500));
+    }
+
+    #[test]
+    fn clamp_rate_dt_passes_through_in_band() {
+        let dt = std::time::Duration::from_millis(100);
+        assert_eq!(clamp_rate_dt(dt), dt);
+    }
 
     #[test]
     fn to_id_byte_clamps_and_rejects_special_values() {

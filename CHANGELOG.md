@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Rate / `angular_velocity` command path** — incoming
+  `GIMBAL_MANAGER_SET_ATTITUDE` (NaN-quaternion + non-NaN
+  angular_velocity), `GIMBAL_MANAGER_SET_PITCHYAW` (NaN angles +
+  non-NaN rate), and `MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW`
+  (NaN param1/2 + param3/4 rates) now route through a one-shot
+  rate→position integrator. Per-source `last_rate_at` timestamp
+  drives `dt`, clamped to [10 ms, 500 ms]. Each rate tick produces
+  one `current + rate × dt` position write through the existing
+  arbitrator pipeline. Stops the previous "silently drop NaN-q
+  commands" failure mode without adding a closed-loop rate
+  controller (STorM32 has no native rate command).
 - **`cargo publish --dry-run` CI gate** — runs alongside fmt / clippy /
   test / doc / release-build / lib-no-default. Catches Cargo.toml
   metadata regressions (broken `package.exclude`, stale

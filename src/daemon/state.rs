@@ -22,6 +22,12 @@ pub struct StateManager {
     /// the per-source rate limiter inside [`Self::set_command`]. Empty
     /// map + `min_command_interval == ZERO` means "no throttle".
     last_command_at: Arc<RwLock<HashMap<ControlSource, Instant>>>,
+    /// When each `ControlSource` last issued a *rate* command. Used by
+    /// the rate→position integrator in `mavlink_manager::handlers::inbound`
+    /// to compute `dt` between successive rate ticks from the same source.
+    /// Distinct from `last_command_at` so a position command from the same
+    /// source doesn't reset the rate timer.
+    last_rate_at: Arc<RwLock<HashMap<ControlSource, Instant>>>,
     /// Minimum delta between two accepted commands from the same source.
     /// `Duration::ZERO` disables the check.
     min_command_interval: Duration,
@@ -45,8 +51,23 @@ impl StateManager {
             last_command: Arc::new(RwLock::new(None)),
             primary_control: Arc::new(RwLock::new(PrimaryControl::default())),
             last_command_at: Arc::new(RwLock::new(HashMap::new())),
+            last_rate_at: Arc::new(RwLock::new(HashMap::new())),
             min_command_interval: interval,
         }
+    }
+
+    /// Most recent rate-command timestamp for the given source, if any.
+    /// Used by the rate→position integrator to compute `dt` between
+    /// consecutive rate ticks from the same source.
+    pub fn last_rate_tick(&self, source: &ControlSource) -> Option<Instant> {
+        self.last_rate_at.read().get(source).copied()
+    }
+
+    /// Mark `source` as having issued a rate command at `now`. The rate
+    /// integrator calls this after computing the new target so the next
+    /// rate tick from the same source sees the right `dt`.
+    pub fn record_rate_tick(&self, source: ControlSource, now: Instant) {
+        self.last_rate_at.write().insert(source, now);
     }
 
     /// Get current gimbal state (blocking read)
