@@ -23,6 +23,11 @@ mavlink:
   # Transport type. Currently only "udp" is implemented.
   transport: udp
 
+  # Local interface to bind. Default 0.0.0.0 (all interfaces). Use
+  # 127.0.0.1 for loopback-only deployments where the firewall doesn't
+  # cover MAVLink, or a specific interface address when multi-homed.
+  bind_addr: 0.0.0.0
+
   # UDP port for MAVLink. Default: 14550 (standard MAVLink port).
   udp_port: 14550
 
