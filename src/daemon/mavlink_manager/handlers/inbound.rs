@@ -5,7 +5,8 @@
 //! periodic loops in [`super::loops`] don't see any of it.
 
 use super::super::math::{
-    clamp_axis, clamp_rate_dt, compute_rate_target_deg, quaternion_wxyz_to_euler_deg, to_id_byte,
+    clamp_axis, clamp_rate_dt, compute_rate_target_deg, earth_to_vehicle_yaw_deg,
+    quaternion_wxyz_to_euler_deg, to_id_byte,
 };
 use super::build::{
     build_gimbal_manager_status_data, message_id_from_param, msg_id, send_command_ack,
@@ -14,10 +15,18 @@ use super::build::{
 use crate::daemon::config::GimbalLimits;
 use crate::daemon::mavlink_manager::RxCtx;
 use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
-use mavlink::ardupilotmega::{MavCmd, MavMessage, MavResult, COMMAND_LONG_DATA};
+use mavlink::ardupilotmega::{
+    GimbalManagerFlags, MavCmd, MavMessage, MavResult, AUTOPILOT_STATE_FOR_GIMBAL_DEVICE_DATA,
+    COMMAND_LONG_DATA,
+};
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
+
+/// How long an autopilot vehicle-attitude reading stays usable for
+/// earth-frame yaw transformation. After this, earth-frame commands
+/// fall back to vehicle frame with a warn.
+const VEHICLE_ATTITUDE_MAX_AGE: Duration = Duration::from_secs(1);
 
 /// Dispatch a parsed inbound `MavMessage` to a per-type handler.
 #[tracing::instrument(level = "debug", skip(msg, ctx))]
@@ -52,8 +61,24 @@ pub(in crate::daemon::mavlink_manager) async fn handle_mavlink_message(
         MavMessage::COMMAND_LONG(cmd) => {
             on_command_long(sender_sysid, sender_compid, src_addr, cmd, ctx).await;
         }
+        MavMessage::AUTOPILOT_STATE_FOR_GIMBAL_DEVICE(m) => {
+            on_autopilot_state(m, ctx);
+        }
         _ => debug!("Ignoring MAVLink message type: {:?}", msg),
     }
+}
+
+/// Ingest the autopilot's vehicle attitude. Only the yaw axis is stored
+/// today — used by the earth-frame yaw transformation in the SET_*
+/// handlers. Pitch / roll come "for free" if/when the gimbal-frame
+/// outputs need full vehicle attitude.
+fn on_autopilot_state(m: AUTOPILOT_STATE_FOR_GIMBAL_DEVICE_DATA, ctx: &RxCtx<'_>) {
+    if m.q.iter().any(|c| c.is_nan()) {
+        debug!("AUTOPILOT_STATE_FOR_GIMBAL_DEVICE with NaN quaternion — ignoring");
+        return;
+    }
+    let (_pitch, _roll, yaw_deg) = quaternion_wxyz_to_euler_deg(m.q);
+    ctx.state.update_vehicle_yaw(yaw_deg);
 }
 
 async fn on_set_attitude(
@@ -103,11 +128,9 @@ async fn on_set_attitude(
         return;
     }
 
-    // TODO: honor frame flags (YAW_IN_VEHICLE_FRAME vs YAW_IN_EARTH_FRAME)
-    // and RETRACT / NEUTRAL shortcuts. Earth-frame yaw needs vehicle
-    // attitude integration, which depends on AUTOPILOT_STATE_FOR_GIMBAL_DEVICE
-    // ingestion that isn't wired up yet.
+    // TODO: honor RETRACT / NEUTRAL shortcuts.
     let (pitch_deg, roll_deg, yaw_deg) = quaternion_wxyz_to_euler_deg(m.q);
+    let yaw_deg = yaw_to_vehicle_frame(yaw_deg, m.flags, ctx, "SET_ATTITUDE");
     let (pitch, roll, yaw) = clamp_pry(pitch_deg, roll_deg, yaw_deg, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
@@ -175,6 +198,7 @@ async fn on_set_pitchyaw(
     } else {
         m.yaw.to_degrees()
     };
+    let yaw_deg = yaw_to_vehicle_frame(yaw_deg, m.flags, ctx, "SET_PITCHYAW");
     let (pitch, _roll, yaw) = clamp_pry(pitch_deg, 0.0, yaw_deg, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
@@ -411,6 +435,42 @@ async fn on_cmd_configure(src_addr: SocketAddr, cmd: COMMAND_LONG_DATA, ctx: &Rx
         MavResult::MAV_RESULT_ACCEPTED,
     )
     .await;
+}
+
+/// Translate a commanded yaw from whatever frame the GCS asked for into
+/// the vehicle frame the STorM32 needs.
+///
+/// The MAVLink GMv2 spec lets the GCS pick frame via flags:
+///   - `YAW_IN_VEHICLE_FRAME` (default) — yaw is relative to the
+///     vehicle's nose. Pass through unchanged.
+///   - `YAW_IN_EARTH_FRAME` — yaw is absolute earth heading. We
+///     subtract current vehicle heading from
+///     `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE` and pass the difference.
+///
+/// If `YAW_IN_EARTH_FRAME` is requested but vehicle attitude is stale
+/// (no autopilot connected, or > [`VEHICLE_ATTITUDE_MAX_AGE`] since
+/// the last frame), fall back to vehicle frame with a one-line warn.
+/// Better honest degradation than silently rejecting the command.
+fn yaw_to_vehicle_frame(
+    raw_yaw_deg: f32,
+    flags: GimbalManagerFlags,
+    ctx: &RxCtx<'_>,
+    label: &str,
+) -> f32 {
+    if !flags.contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_EARTH_FRAME) {
+        return raw_yaw_deg;
+    }
+    match ctx.state.vehicle_yaw_deg(VEHICLE_ATTITUDE_MAX_AGE) {
+        Some(vehicle_yaw) => earth_to_vehicle_yaw_deg(raw_yaw_deg, vehicle_yaw),
+        None => {
+            warn!(
+                "{}: YAW_IN_EARTH_FRAME requested but no fresh AUTOPILOT_STATE — \
+                 falling back to vehicle-frame interpretation",
+                label
+            );
+            raw_yaw_deg
+        }
+    }
 }
 
 /// True if any of the three axis rates is finite and non-zero. Used to
