@@ -102,6 +102,33 @@ mavlink:
 - A critical task exiting unexpectedly (IPC, MAVLink, reconnect) tears
   the daemon down instead of leaving it half-running.
 
+## Use as a library
+
+Two consumption modes:
+
+- **Lean driver** (`default-features = false`): just the `Storm32RC`
+  driver and the `GimbalDevice` trait. Pulls 4 direct deps
+  (`serde / serialport / thiserror / tracing`) and no tokio.
+
+  ```toml
+  [dependencies]
+  turret = { version = "0.1", default-features = false }
+  ```
+
+  ```rust,no_run
+  let mut g = turret::detect_gimbal("/dev/ttyACM0")?;
+  g.set_attitude(10.0, 0.0, -15.0)?;
+  # Ok::<_, turret::Error>(())
+  ```
+
+- **Embedded MAVLink manager**: bring your own `dyn GimbalDevice`
+  (different protocol, simulator, network-attached gimbal) and let
+  Turret handle MAVLink discovery, primary-control arbitration, hot
+  attitude broadcast, IPC, and bounded shutdown. The default features
+  pull tokio + the daemon stack.
+
+  See `turret::daemon` module-level docs for the full embedding example.
+
 ## Develop
 With a recent [Rust](https://rustup.rs) installed:
 ```bash
