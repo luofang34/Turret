@@ -23,6 +23,11 @@
 //! Lower-level modules ([`protocols`] and [`device_scanner`]) are exposed
 //! for advanced integration but do not yet guarantee a stable API surface.
 //!
+//! For embedding the MAVLink Gimbal Manager + IPC server in your own
+//! binary with a custom [`GimbalDevice`] (different protocol, simulator,
+//! network-attached gimbal), see the module-level docs of `daemon`
+//! (only built with the `daemon` feature, which is on by default).
+//!
 //! # Cargo features
 //!
 //! - **`daemon`** (default) — pulls in tokio, the IPC server, the MAVLink

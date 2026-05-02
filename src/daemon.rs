@@ -1,11 +1,75 @@
 //! Long-running daemon: IPC server + MAVLink Gimbal Manager + hot-plug
 //! recovery glued onto a single gimbal handle.
 //!
-//! [`run_daemon`] is the entry point; everything else under this module is
-//! the building blocks it spawns. Submodules are public so an external
-//! crate can wire its own combination — see the `arbitrator` /
-//! `mavlink_manager` / `state` types — but the supported way to bring up
-//! the full daemon is `run_daemon`.
+//! Two consumption modes are supported:
+//!
+//! 1. **The `turret` binary** — `run_daemon(Some("turret.yaml".into()))`
+//!    loads YAML config, opens an auto-detected STorM32, spawns IPC +
+//!    MAVLink + reconnect, and blocks on `SIGINT` / `SIGTERM`.
+//! 2. **Embedded** — your own binary keeps full control of the tokio
+//!    runtime and supplies its own [`crate::gimbal::GimbalDevice`] (a
+//!    different protocol, a network-attached gimbal, a simulator).
+//!    The pieces under this module are all `pub` so you can wire them
+//!    yourself; the rest of this doc shows the minimum invocation.
+//!
+//! # Embedding the MAVLink manager with a custom gimbal
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use std::net::{IpAddr, Ipv4Addr};
+//! use tokio::sync::{Mutex, Notify};
+//! use turret::daemon::config::{GimbalLimits, MavlinkConfig, Transport};
+//! use turret::daemon::mavlink_manager::MavlinkManager;
+//! use turret::daemon::state::StateManager;
+//! use turret::gimbal::{Attitude, GimbalDevice};
+//!
+//! struct MyGimbal;
+//! impl GimbalDevice for MyGimbal {
+//!     fn protocol_name(&self) -> &'static str { "MyProtocol" }
+//!     fn set_attitude(&mut self, _p: f32, _r: f32, _y: f32) -> turret::Result<()> {
+//!         // …push the angles to your hardware…
+//!         Ok(())
+//!     }
+//!     fn get_attitude(&mut self) -> turret::Result<Attitude> {
+//!         // …read back from your hardware…
+//!         Ok(Attitude { pitch: 0.0, roll: 0.0, yaw: 0.0 })
+//!     }
+//! }
+//!
+//! # async fn run() -> turret::Result<()> {
+//! // Shared between MAVLink manager, IPC server (if you spawn one), and
+//! // any reconnect supervisor — every consumer sees the same `Box<dyn>`
+//! // through the `Arc<Mutex<...>>`.
+//! let gimbal: Arc<Mutex<Box<dyn GimbalDevice>>> =
+//!     Arc::new(Mutex::new(Box::new(MyGimbal)));
+//! let state = StateManager::new();
+//!
+//! // Pinged by the manager's attitude poll loop after enough consecutive
+//! // read failures. Wire it to your own reconnect task; if you don't
+//! // have one, just leave it un-awaited.
+//! let notify_lost = Arc::new(Notify::new());
+//!
+//! let manager = MavlinkManager::new(state, gimbal, notify_lost);
+//! manager.start(MavlinkConfig {
+//!     enabled: true,
+//!     transport: Transport::Udp,
+//!     bind_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED), // 0.0.0.0
+//!     udp_port: 14550,
+//!     sysid: 1,
+//!     compid: 154,
+//!     limits: GimbalLimits::default(),
+//! }).await?;
+//! # Ok(()) }
+//! ```
+//!
+//! `MavlinkManager::start` runs forever — wrap it in `tokio::spawn` if you
+//! need to combine it with other futures. For per-source rate limiting,
+//! construct the state manager with
+//! [`state::StateManager::with_min_command_interval`] instead of `new()`.
+//!
+//! [`run_daemon`] is the supported full-stack entry point and shows how
+//! all of this is wired together; treat its source as the authoritative
+//! recipe.
 
 #[path = "daemon/arbitrator.rs"]
 pub mod arbitrator;

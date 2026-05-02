@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Embedded-API documentation** — module-level rustdoc on
+  `turret::daemon` now includes a worked example for users who want
+  to wire `MavlinkManager` against their own `dyn GimbalDevice`
+  (different protocol, simulator, network-attached gimbal). README
+  gains a "Use as a library" section describing the lean-driver
+  vs embedded-manager modes.
 - **Configurable MAVLink bind interface** — new `mavlink.bind_addr`
   YAML field (typed `IpAddr`, default `0.0.0.0`). Loopback-only
   deployments can set `127.0.0.1`; multi-homed boxes can pin a
