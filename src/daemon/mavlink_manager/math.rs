@@ -118,6 +118,32 @@ pub(super) fn clamp_rate_dt(dt: std::time::Duration) -> std::time::Duration {
     dt.clamp(MIN, MAX)
 }
 
+/// Wrap an angle in degrees to the canonical `[-180, 180]` range.
+///
+/// The earth-frame ↔ vehicle-frame conversion does plain subtraction,
+/// which can leave the result outside that range (e.g. earth=170°,
+/// vehicle=-170° → 340°). Wrap so the gimbal driver and downstream
+/// clamps don't see surprising magnitudes.
+pub(super) fn wrap_180_deg(deg: f32) -> f32 {
+    let mut x = deg % 360.0;
+    if x > 180.0 {
+        x -= 360.0;
+    } else if x < -180.0 {
+        x += 360.0;
+    }
+    x
+}
+
+/// Earth-frame yaw → vehicle-frame yaw given the vehicle's current heading.
+///
+/// `earth_yaw_deg` is what the GCS commanded with
+/// `GIMBAL_MANAGER_FLAGS_YAW_IN_EARTH_FRAME` set; `vehicle_yaw_deg` is
+/// the autopilot's current heading from `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE`.
+/// Result is the gimbal-frame yaw to send to the device.
+pub(super) fn earth_to_vehicle_yaw_deg(earth_yaw_deg: f32, vehicle_yaw_deg: f32) -> f32 {
+    wrap_180_deg(earth_yaw_deg - vehicle_yaw_deg)
+}
+
 /// Convert a `COMMAND_LONG` param (`f32`) to a MAVLink sysid/compid byte.
 ///
 /// The MAVLink v2 spec reserves negative values (-3, -2, -1) for special
@@ -187,6 +213,46 @@ mod tests {
     fn clamp_rate_dt_passes_through_in_band() {
         let dt = std::time::Duration::from_millis(100);
         assert_eq!(clamp_rate_dt(dt), dt);
+    }
+
+    #[test]
+    fn wrap_180_passes_through_in_band() {
+        assert!((wrap_180_deg(0.0) - 0.0).abs() < 1e-4);
+        assert!((wrap_180_deg(90.0) - 90.0).abs() < 1e-4);
+        assert!((wrap_180_deg(-179.9) - -179.9).abs() < 1e-4);
+        assert!((wrap_180_deg(180.0) - 180.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn wrap_180_normalises_above_180() {
+        // 340° → -20° (the typical "earth_yaw - (-vehicle_yaw)" overshoot).
+        assert!((wrap_180_deg(340.0) - -20.0).abs() < 1e-4);
+        assert!((wrap_180_deg(181.0) - -179.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn wrap_180_normalises_below_neg_180() {
+        assert!((wrap_180_deg(-340.0) - 20.0).abs() < 1e-4);
+        assert!((wrap_180_deg(-181.0) - 179.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn earth_to_vehicle_yaw_subtracts_vehicle_heading() {
+        // Vehicle pointing east (90° earth heading), earth-frame target
+        // also east (90°): gimbal should hold yaw = 0 (look straight ahead).
+        assert!((earth_to_vehicle_yaw_deg(90.0, 90.0) - 0.0).abs() < 1e-4);
+
+        // Vehicle east (90°), earth target north (0°): gimbal yaws -90°
+        // (look left from the vehicle's own forward).
+        assert!((earth_to_vehicle_yaw_deg(0.0, 90.0) - -90.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn earth_to_vehicle_yaw_wraps_correctly() {
+        // earth=170°, vehicle=-170° → 340° → wrap → -20°.
+        assert!((earth_to_vehicle_yaw_deg(170.0, -170.0) - -20.0).abs() < 1e-4);
+        // earth=-170°, vehicle=170° → -340° → wrap → 20°.
+        assert!((earth_to_vehicle_yaw_deg(-170.0, 170.0) - 20.0).abs() < 1e-4);
     }
 
     #[test]

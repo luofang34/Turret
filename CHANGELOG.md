@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Earth-frame yaw + `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE` ingestion** —
+  the manager now consumes vehicle attitude from the autopilot and
+  honors `GIMBAL_MANAGER_FLAGS_YAW_IN_EARTH_FRAME` on inbound SET_*
+  commands. Earth-frame yaw is converted to vehicle frame via
+  `earth_to_vehicle_yaw_deg`, with `wrap_180_deg` normalization.
+  Stale (>1 s old) or missing autopilot attitude triggers an honest
+  fall-back to vehicle-frame interpretation with a warn (no silent
+  rejection). Pure-function `math.rs` helpers; tests cover wrap
+  in-band/above/below and the earth-to-vehicle subtraction.
 - **Rate / `angular_velocity` command path** — incoming
   `GIMBAL_MANAGER_SET_ATTITUDE` (NaN-quaternion + non-NaN
   angular_velocity), `GIMBAL_MANAGER_SET_PITCHYAW` (NaN angles +

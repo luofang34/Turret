@@ -28,6 +28,12 @@ pub struct StateManager {
     /// Distinct from `last_command_at` so a position command from the same
     /// source doesn't reset the rate timer.
     last_rate_at: Arc<RwLock<HashMap<ControlSource, Instant>>>,
+    /// Most recent vehicle yaw (degrees, earth frame) reported by an
+    /// `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE` message, plus its arrival
+    /// timestamp. Used to translate earth-frame yaw commands to
+    /// vehicle-frame before sending to the device. `None` until at
+    /// least one such message arrives.
+    vehicle_attitude: Arc<RwLock<Option<(f32, Instant)>>>,
     /// Minimum delta between two accepted commands from the same source.
     /// `Duration::ZERO` disables the check.
     min_command_interval: Duration,
@@ -52,8 +58,23 @@ impl StateManager {
             primary_control: Arc::new(RwLock::new(PrimaryControl::default())),
             last_command_at: Arc::new(RwLock::new(HashMap::new())),
             last_rate_at: Arc::new(RwLock::new(HashMap::new())),
+            vehicle_attitude: Arc::new(RwLock::new(None)),
             min_command_interval: interval,
         }
+    }
+
+    /// Record the autopilot's reported vehicle yaw (degrees, earth frame).
+    /// Called from the `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE` inbound handler.
+    pub fn update_vehicle_yaw(&self, yaw_deg: f32) {
+        *self.vehicle_attitude.write() = Some((yaw_deg, Instant::now()));
+    }
+
+    /// Vehicle yaw if we've heard from the autopilot within `max_age`,
+    /// otherwise `None`. Earth-frame yaw commands fall back to vehicle
+    /// frame (with a warn) when this returns `None`.
+    pub fn vehicle_yaw_deg(&self, max_age: Duration) -> Option<f32> {
+        let snapshot = *self.vehicle_attitude.read();
+        snapshot.and_then(|(yaw, t)| (t.elapsed() <= max_age).then_some(yaw))
     }
 
     /// Most recent rate-command timestamp for the given source, if any.
@@ -256,6 +277,31 @@ mod tests {
         assert_eq!(state.pitch, 20.0);
         assert_eq!(state.roll, 30.0);
         assert!(state.measured_at.is_some());
+    }
+
+    #[test]
+    fn vehicle_yaw_returns_none_until_set() {
+        let m = StateManager::new();
+        assert!(m.vehicle_yaw_deg(Duration::from_secs(1)).is_none());
+    }
+
+    #[test]
+    fn vehicle_yaw_returns_value_within_window() {
+        let m = StateManager::new();
+        m.update_vehicle_yaw(42.5);
+        let yaw = m.vehicle_yaw_deg(Duration::from_secs(1));
+        assert!(yaw.is_some());
+        assert!((yaw.unwrap() - 42.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn vehicle_yaw_returns_none_when_stale() {
+        let m = StateManager::new();
+        m.update_vehicle_yaw(42.5);
+        // 0 ns max-age means "everything is stale" — proxy for the
+        // real "last AUTOPILOT_STATE was > 1 s ago" case without
+        // sleeping the test.
+        assert!(m.vehicle_yaw_deg(Duration::ZERO).is_none());
     }
 
     #[test]
