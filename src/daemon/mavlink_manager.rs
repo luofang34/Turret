@@ -10,8 +10,8 @@ mod math;
 
 use super::arbitrator::Arbitrator;
 use super::config::{MavlinkConfig, Transport};
+use super::gimbal_handle::GimbalHandle;
 use super::state::StateManager;
-use crate::gimbal::GimbalDevice;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU8;
@@ -36,7 +36,7 @@ pub(crate) struct RxCtx<'a> {
     pub seq: &'a Arc<AtomicU8>,
     pub state: &'a StateManager,
     pub arbitrator: &'a Arbitrator,
-    pub gimbal: &'a Arc<Mutex<Box<dyn GimbalDevice>>>,
+    pub gimbal: &'a GimbalHandle,
     /// Daemon boot reference for `time_boot_ms` on on-demand frames built
     /// inside per-message handlers (the periodic loops carry their own copy).
     pub start_time: Instant,
@@ -46,7 +46,7 @@ pub(crate) struct RxCtx<'a> {
 pub struct MavlinkManager {
     state_manager: StateManager,
     arbitrator: Arc<Arbitrator>,
-    gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+    gimbal: GimbalHandle,
     peers: Peers,
     /// Monotonic sequence counter for outbound frames.
     seq: Arc<AtomicU8>,
@@ -64,7 +64,7 @@ impl MavlinkManager {
     /// `reconnect_task` drives recovery from there.
     pub fn new(
         state_manager: StateManager,
-        gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+        gimbal: GimbalHandle,
         notify_lost: Arc<Notify>,
     ) -> Self {
         let arbitrator = Arc::new(Arbitrator::new(state_manager.clone()));

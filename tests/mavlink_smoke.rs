@@ -26,8 +26,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 use turret::daemon::config::{GimbalLimits, MavlinkConfig, Transport};
+use turret::daemon::gimbal_handle::GimbalHandle;
 use turret::daemon::mavlink_manager::MavlinkManager;
 use turret::daemon::state::StateManager;
 use turret::error::Result;
@@ -138,7 +139,7 @@ async fn set_pitchyaw_round_trips_through_attitude_status_broadcast() {
     let mock = Box::new(MockGimbal {
         state: mock_state.clone(),
     }) as Box<dyn GimbalDevice>;
-    let gimbal = Arc::new(Mutex::new(mock));
+    let gimbal = GimbalHandle::new(mock);
     let state_manager = StateManager::new();
     let notify_lost = Arc::new(Notify::new());
 

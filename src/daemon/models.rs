@@ -267,26 +267,8 @@ pub enum IpcCommand {
     Center,
     /// Read the cached gimbal state — does NOT poll the device.
     Status,
-    /// Decode the gimbal's `CMD_GETVERSION` reply.
+    /// Decode the gimbal's firmware version string.
     Version,
-    /// Decode the gimbal's `CMD_GETVERSIONSTR` reply (longer, human-readable).
-    #[serde(rename = "version-str")]
-    VersionStr,
-    /// Storm32-only: set pitch axis to a raw RC value (700..=2300, 0 = recenter).
-    Pitch {
-        /// RC value 700..=2300, or 0 to recenter.
-        value: u16,
-    },
-    /// Storm32-only: set roll axis to a raw RC value. See [`Self::Pitch`].
-    Roll {
-        /// RC value 700..=2300, or 0 to recenter.
-        value: u16,
-    },
-    /// Storm32-only: set yaw axis to a raw RC value. See [`Self::Pitch`].
-    Yaw {
-        /// RC value 700..=2300, or 0 to recenter.
-        value: u16,
-    },
     /// Set the pan-mode byte. See [`PanMode`] for the encoding.
     #[serde(rename = "pan-mode")]
     PanMode {

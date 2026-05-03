@@ -79,6 +79,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in ~250 ms.
 
 ### Changed
+- **Single-owner gimbal task** — every gimbal call now runs through
+  `daemon::gimbal_handle::GimbalHandle`, which routes the underlying
+  sync I/O via `tokio::task::spawn_blocking`. Eliminates the previous
+  "tokio Mutex held across `std::thread::sleep` in the storm32 driver"
+  anti-pattern: the runtime worker that originated a gimbal call now
+  returns to scheduling other tasks immediately while the blocking
+  thread pool absorbs the serial transaction. `Arbitrator::process_command`
+  splits into a pure `arbitrate(cmd) -> Outcome` (no I/O) plus the
+  caller's separate `gimbal.set_attitude(...).await`. Public API
+  change: `MavlinkManager::new` and `IpcServer::new` now take
+  `GimbalHandle` instead of `Arc<Mutex<Box<dyn GimbalDevice>>>`.
 - **MSRV bumped to 1.74** (required for `Cargo.toml [lints]` tables).
 - **`MavlinkConfig::transport`** is now `enum Transport { Udp }` —
   YAML typos caught at config-load time. `serial_device` field
@@ -99,6 +110,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status / attitude broadcast fan-out.
 
 ### Removed
+- **IPC Storm32-specific commands** (`pitch / roll / yaw / version-str`).
+  These bypassed the `GimbalDevice` trait via `as_any_mut().downcast_mut::<Storm32RC>()`
+  and silently failed with "requires Storm32 device" for any future
+  protocol. Equivalent functionality remains in the CLI (which talks
+  to the driver directly): `turret pitch <value> / roll / yaw /
+  version-str`. IPC clients that need partial-axis updates should
+  read `status` and resend a full `set` instead.
 - Six orphan files (TOML config + client-side MAVLink driver).
 - `MavlinkManager._config` dead field, `cleanup_stale_commands` /
   `clear_stale_commands` dead method pair, `serial_device` config

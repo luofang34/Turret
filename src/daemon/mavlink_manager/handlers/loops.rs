@@ -6,9 +6,9 @@ use super::build::{
     broadcast_to_peers, build_attitude_status_data, build_gimbal_manager_status_data,
 };
 use crate::daemon::config::MavlinkConfig;
+use crate::daemon::gimbal_handle::GimbalHandle;
 use crate::daemon::mavlink_manager::Peers;
 use crate::daemon::state::StateManager;
-use crate::gimbal::GimbalDevice;
 use mavlink::ardupilotmega::{
     GimbalDeviceErrorFlags, MavAutopilot, MavMessage, MavModeFlag, MavState, MavType,
     HEARTBEAT_DATA,
@@ -17,7 +17,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 use tokio::time;
 use tracing::{info, warn};
 
@@ -92,7 +92,7 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_loop(
     seq: Arc<AtomicU8>,
     state_manager: StateManager,
     config: MavlinkConfig,
-    gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+    gimbal: GimbalHandle,
     start_time: Instant,
     notify_lost: Arc<Notify>,
 ) {
@@ -117,10 +117,7 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_loop(
     loop {
         interval.tick().await;
 
-        let attitude = {
-            let mut g = gimbal.lock().await;
-            g.get_attitude()
-        };
+        let attitude = gimbal.get_attitude().await;
 
         let attitude = match attitude {
             Ok(a) => {
