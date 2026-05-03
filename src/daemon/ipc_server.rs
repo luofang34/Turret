@@ -2,11 +2,11 @@
 //! ([`super::models::IpcCommand`] / [`super::models::IpcResponse`]) and
 //! routes through the same priority arbitrator as the MAVLink handlers.
 
-use super::arbitrator::Arbitrator;
+use super::arbitrator::{Arbitrator, Outcome};
 use super::config::IpcConfig;
+use super::gimbal_handle::GimbalHandle;
 use super::models::{CommandMode, ControlSource, GimbalCommand, IpcCommand, IpcResponse, PanMode};
 use super::state::StateManager;
-use crate::gimbal::GimbalDevice;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -18,7 +18,7 @@ pub struct IpcServer {
     config: IpcConfig,
     state_manager: StateManager,
     arbitrator: Arc<Arbitrator>,
-    gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+    gimbal: GimbalHandle,
     next_client_id: Arc<Mutex<u32>>,
 }
 
@@ -27,11 +27,7 @@ impl IpcServer {
     /// Each accepted connection gets its own `Arbitrator` — they all share
     /// the same `StateManager`, so primary-control / priority decisions
     /// stay coherent across clients.
-    pub fn new(
-        config: IpcConfig,
-        state_manager: StateManager,
-        gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
-    ) -> Self {
+    pub fn new(config: IpcConfig, state_manager: StateManager, gimbal: GimbalHandle) -> Self {
         let arbitrator = Arc::new(Arbitrator::new(state_manager.clone()));
 
         Self {
@@ -98,7 +94,7 @@ impl IpcServer {
         stream: UnixStream,
         state_manager: StateManager,
         arbitrator: Arc<Arbitrator>,
-        gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+        gimbal: GimbalHandle,
     ) -> crate::error::Result<()> {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
@@ -146,7 +142,7 @@ impl IpcServer {
         command_str: &str,
         state_manager: &StateManager,
         arbitrator: &Arbitrator,
-        gimbal: &Arc<Mutex<Box<dyn GimbalDevice>>>,
+        gimbal: &GimbalHandle,
     ) -> IpcResponse {
         // Parse JSON command
         let command: IpcCommand = match serde_json::from_str(command_str) {
@@ -165,13 +161,7 @@ impl IpcServer {
                     Some(pitch),
                     Some(roll),
                 );
-
-                let mut gimbal_guard = gimbal.lock().await;
-                match arbitrator.process_command(gimbal_cmd, &mut gimbal_guard) {
-                    Ok(true) => IpcResponse::ok(),
-                    Ok(false) => IpcResponse::error("Command rejected (lower priority)"),
-                    Err(e) => IpcResponse::error(format!("Failed to set angles: {}", e)),
-                }
+                execute_position(arbitrator, gimbal, gimbal_cmd, "set").await
             }
 
             IpcCommand::Center => {
@@ -182,13 +172,7 @@ impl IpcServer {
                     Some(0.0),
                     Some(0.0),
                 );
-
-                let mut gimbal_guard = gimbal.lock().await;
-                match arbitrator.process_command(gimbal_cmd, &mut gimbal_guard) {
-                    Ok(true) => IpcResponse::ok(),
-                    Ok(false) => IpcResponse::error("Command rejected (lower priority)"),
-                    Err(e) => IpcResponse::error(format!("Failed to center: {}", e)),
-                }
+                execute_position(arbitrator, gimbal, gimbal_cmd, "center").await
             }
 
             IpcCommand::Status => {
@@ -204,21 +188,17 @@ impl IpcServer {
                 IpcResponse::ok_with_data(data)
             }
 
-            IpcCommand::Version => {
-                let mut gimbal_guard = gimbal.lock().await;
-                match gimbal_guard.get_version() {
-                    Ok(version) => {
-                        let data = serde_json::json!({ "version": version });
-                        IpcResponse::ok_with_data(data)
-                    }
-                    Err(e) => IpcResponse::error(format!("Failed to get version: {}", e)),
+            IpcCommand::Version => match gimbal.get_version().await {
+                Ok(version) => {
+                    let data = serde_json::json!({ "version": version });
+                    IpcResponse::ok_with_data(data)
                 }
-            }
+                Err(e) => IpcResponse::error(format!("Failed to get version: {}", e)),
+            },
 
             IpcCommand::PanMode { mode } => {
                 if let Some(pan_mode) = PanMode::from_u8(mode) {
-                    let mut gimbal_guard = gimbal.lock().await;
-                    match gimbal_guard.set_pan_mode(mode) {
+                    match gimbal.set_pan_mode(mode).await {
                         Ok(_) => {
                             state_manager.update_pan_mode(pan_mode);
                             IpcResponse::ok()
@@ -230,16 +210,13 @@ impl IpcServer {
                 }
             }
 
-            IpcCommand::Standby { enable } => {
-                let mut gimbal_guard = gimbal.lock().await;
-                match gimbal_guard.set_standby(enable) {
-                    Ok(_) => {
-                        state_manager.update_standby(enable);
-                        IpcResponse::ok()
-                    }
-                    Err(e) => IpcResponse::error(format!("Failed to set standby: {}", e)),
+            IpcCommand::Standby { enable } => match gimbal.set_standby(enable).await {
+                Ok(_) => {
+                    state_manager.update_standby(enable);
+                    IpcResponse::ok()
                 }
-            }
+                Err(e) => IpcResponse::error(format!("Failed to set standby: {}", e)),
+            },
 
             IpcCommand::Help => {
                 let help_text = serde_json::json!({
@@ -256,5 +233,25 @@ impl IpcServer {
                 IpcResponse::ok_with_data(help_text)
             }
         }
+    }
+}
+
+/// Common tail for `Set` / `Center`: arbitrate, then call the gimbal
+/// handle if accepted. Failures from either layer collapse to the
+/// caller's IPC error response shape.
+async fn execute_position(
+    arbitrator: &Arbitrator,
+    gimbal: &GimbalHandle,
+    cmd: GimbalCommand,
+    label: &str,
+) -> IpcResponse {
+    match arbitrator.arbitrate(cmd) {
+        Outcome::Execute { pitch, roll, yaw } => {
+            match gimbal.set_attitude(pitch, roll, yaw).await {
+                Ok(()) => IpcResponse::ok(),
+                Err(e) => IpcResponse::error(format!("Failed to {label}: {e}")),
+            }
+        }
+        Outcome::Rejected => IpcResponse::error("Command rejected (lower priority)"),
     }
 }

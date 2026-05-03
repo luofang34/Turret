@@ -79,6 +79,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in ~250 ms.
 
 ### Changed
+- **Single-owner gimbal task** — every gimbal call now runs through
+  `daemon::gimbal_handle::GimbalHandle`, which routes the underlying
+  sync I/O via `tokio::task::spawn_blocking`. Eliminates the previous
+  "tokio Mutex held across `std::thread::sleep` in the storm32 driver"
+  anti-pattern: the runtime worker that originated a gimbal call now
+  returns to scheduling other tasks immediately while the blocking
+  thread pool absorbs the serial transaction. `Arbitrator::process_command`
+  splits into a pure `arbitrate(cmd) -> Outcome` (no I/O) plus the
+  caller's separate `gimbal.set_attitude(...).await`. Public API
+  change: `MavlinkManager::new` and `IpcServer::new` now take
+  `GimbalHandle` instead of `Arc<Mutex<Box<dyn GimbalDevice>>>`.
 - **MSRV bumped to 1.74** (required for `Cargo.toml [lints]` tables).
 - **`MavlinkConfig::transport`** is now `enum Transport { Udp }` —
   YAML typos caught at config-load time. `serial_device` field

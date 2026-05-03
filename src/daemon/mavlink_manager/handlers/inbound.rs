@@ -12,6 +12,7 @@ use super::build::{
     build_gimbal_manager_status_data, message_id_from_param, msg_id, send_command_ack,
     send_gimbal_manager_information, send_mavlink_message,
 };
+use crate::daemon::arbitrator::Outcome;
 use crate::daemon::config::GimbalLimits;
 use crate::daemon::mavlink_manager::RxCtx;
 use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
@@ -386,25 +387,25 @@ async fn on_cmd_pitchyaw(
         Some(0.0),
     );
 
-    let result = {
-        let mut gimbal_guard = ctx.gimbal.lock().await;
-        ctx.arbitrator.process_command(command, &mut gimbal_guard)
-    };
-    let ack = match result {
-        Ok(true) => {
-            info!(
-                "MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW accepted from ({},{})",
-                sender_sysid, sender_compid
-            );
-            MavResult::MAV_RESULT_ACCEPTED
+    let ack = match ctx.arbitrator.arbitrate(command) {
+        Outcome::Execute { pitch, roll, yaw } => {
+            match ctx.gimbal.set_attitude(pitch, roll, yaw).await {
+                Ok(()) => {
+                    info!(
+                        "MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW accepted from ({},{})",
+                        sender_sysid, sender_compid
+                    );
+                    MavResult::MAV_RESULT_ACCEPTED
+                }
+                Err(e) => {
+                    error!("MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW execution failed: {}", e);
+                    MavResult::MAV_RESULT_FAILED
+                }
+            }
         }
-        Ok(false) => {
+        Outcome::Rejected => {
             debug!("MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW rejected by arbitrator (priority)");
             MavResult::MAV_RESULT_TEMPORARILY_REJECTED
-        }
-        Err(e) => {
-            error!("MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW execution failed: {}", e);
-            MavResult::MAV_RESULT_FAILED
         }
     };
     send_command_ack(
@@ -569,13 +570,17 @@ fn clamp_pry(pitch: f32, roll: f32, yaw: f32, limits: &GimbalLimits) -> (f32, f3
     )
 }
 
-/// Common tail for SET_* handlers: execute through the arbitrator and log.
+/// Common tail for SET_* handlers: arbitrate, then call the gimbal handle
+/// if the arbitrator accepted.
 async fn dispatch_gimbal_command(command: GimbalCommand, ctx: &RxCtx<'_>, label: &str) {
-    let mut gimbal_guard = ctx.gimbal.lock().await;
-    match ctx.arbitrator.process_command(command, &mut gimbal_guard) {
-        Ok(true) => info!("Executed MAVLink {}", label),
-        Ok(false) => warn!("MAVLink {} rejected (lower priority)", label),
-        Err(e) => error!("Failed to execute MAVLink {}: {}", label, e),
+    match ctx.arbitrator.arbitrate(command) {
+        Outcome::Execute { pitch, roll, yaw } => {
+            match ctx.gimbal.set_attitude(pitch, roll, yaw).await {
+                Ok(()) => info!("Executed MAVLink {}", label),
+                Err(e) => error!("Failed to execute MAVLink {}: {}", label, e),
+            }
+        }
+        Outcome::Rejected => warn!("MAVLink {} rejected (lower priority)", label),
     }
 }
 

@@ -17,8 +17,9 @@
 //! ```no_run
 //! use std::sync::Arc;
 //! use std::net::{IpAddr, Ipv4Addr};
-//! use tokio::sync::{Mutex, Notify};
+//! use tokio::sync::Notify;
 //! use turret::daemon::config::{GimbalLimits, MavlinkConfig, Transport};
+//! use turret::daemon::gimbal_handle::GimbalHandle;
 //! use turret::daemon::mavlink_manager::MavlinkManager;
 //! use turret::daemon::state::StateManager;
 //! use turret::gimbal::{Attitude, GimbalDevice};
@@ -37,11 +38,11 @@
 //! }
 //!
 //! # async fn run() -> turret::Result<()> {
-//! // Shared between MAVLink manager, IPC server (if you spawn one), and
-//! // any reconnect supervisor — every consumer sees the same `Box<dyn>`
-//! // through the `Arc<Mutex<...>>`.
-//! let gimbal: Arc<Mutex<Box<dyn GimbalDevice>>> =
-//!     Arc::new(Mutex::new(Box::new(MyGimbal)));
+//! // GimbalHandle owns the device and routes every call through
+//! // `tokio::task::spawn_blocking` so the runtime worker isn't blocked
+//! // by sync serial I/O. Cheap to clone — share the same handle with
+//! // IPC server, reconnect supervisor, anything else.
+//! let gimbal = GimbalHandle::new(Box::new(MyGimbal));
 //! let state = StateManager::new();
 //!
 //! // Pinged by the manager's attitude poll loop after enough consecutive
@@ -75,6 +76,8 @@
 pub mod arbitrator;
 #[path = "daemon/config.rs"]
 pub mod config;
+#[path = "daemon/gimbal_handle.rs"]
+pub mod gimbal_handle;
 #[path = "daemon/ipc_server.rs"]
 pub mod ipc_server;
 #[path = "daemon/mavlink_manager.rs"]
@@ -85,14 +88,15 @@ pub mod models;
 pub mod state;
 
 use crate::device_scanner::DeviceScanner;
-use crate::gimbal::{self, GimbalDevice};
+use crate::gimbal;
 use config::DaemonConfig;
+use gimbal_handle::GimbalHandle;
 use ipc_server::IpcServer;
 use mavlink_manager::MavlinkManager;
 use state::StateManager;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -155,9 +159,12 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         state_manager.update_firmware_version(version);
     }
 
-    // Wrap gimbal in Arc<Mutex> for sharing between IPC, MAVLink, and the
-    // hot-plug recovery task.
-    let gimbal_shared = Arc::new(Mutex::new(gimbal));
+    // Wrap gimbal in a GimbalHandle so every consumer (IPC, MAVLink,
+    // attitude poll, reconnect) shares one underlying device through
+    // an Arc<parking_lot::Mutex<...>>, with all I/O routed through
+    // `tokio::task::spawn_blocking` so the runtime worker isn't blocked
+    // by the storm32 driver's `std::thread::sleep` between bytes.
+    let gimbal_shared = GimbalHandle::new(gimbal);
 
     // The MAVLink attitude poll loop pings this when it counts too many
     // consecutive read failures; the reconnect task takes over from there.
@@ -313,7 +320,7 @@ fn cleanup_ipc_socket(path: &str) {
 /// the dead handle instead of piling up behind us.
 async fn reconnect_task(
     notify_lost: Arc<Notify>,
-    gimbal: Arc<Mutex<Box<dyn GimbalDevice>>>,
+    gimbal: GimbalHandle,
     state_manager: StateManager,
     configured_path: String,
 ) {
@@ -365,7 +372,7 @@ async fn reconnect_task(
         }
 
         // Swap last so concurrent ops can't see a half-initialized box.
-        *gimbal.lock().await = new_gimbal;
+        gimbal.replace(new_gimbal).await;
         info!("Reconnect: gimbal swap complete; resuming normal operation");
     }
 }
