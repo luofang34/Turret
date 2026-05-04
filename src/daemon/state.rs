@@ -270,6 +270,14 @@ impl StateManager {
         self.last_command_at.write().remove(source);
         self.last_rate_at.write().remove(source);
     }
+
+    /// Whether the daemon last commanded the gimbal into standby. Tracks the
+    /// standby toggles the daemon itself issues; not a poll of the device, so
+    /// it can drift if some other host puts the gimbal into standby out of
+    /// band. Used by `GIMBAL_MANAGER_STATUS` to advertise `RETRACT`.
+    pub fn is_standby(&self) -> bool {
+        self.state.read().standby
+    }
 }
 
 /// Bound the per-source map's size before an insert. Two passes:
