@@ -358,8 +358,7 @@ mod tests {
     fn deserialize_pan_mode_uses_snake_case_discriminator() {
         // Wire form is `pan_mode`, not `pan-mode` (kebab) or `panmode`
         // (the `rename_all = "lowercase"` would-be default).
-        let cmd: IpcCommand =
-            serde_json::from_str(r#"{"cmd":"pan_mode","mode":3}"#).unwrap();
+        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd":"pan_mode","mode":3}"#).unwrap();
         match cmd {
             IpcCommand::PanMode { mode } => assert_eq!(mode, 3),
             other => panic!("expected PanMode, got {other:?}"),
@@ -369,8 +368,7 @@ mod tests {
     #[test]
     fn deserialize_standby_uses_enabled_field() {
         // Wire form is `enabled` (boolean state), not `enable` (verb).
-        let cmd: IpcCommand =
-            serde_json::from_str(r#"{"cmd":"standby","enabled":true}"#).unwrap();
+        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd":"standby","enabled":true}"#).unwrap();
         match cmd {
             IpcCommand::Standby { enabled } => assert!(enabled),
             other => panic!("expected Standby, got {other:?}"),
@@ -382,8 +380,7 @@ mod tests {
         // The kebab-case form was the previous wire shape; rejecting it
         // outright (rather than silently mis-parsing) helps clients
         // discover the rename quickly.
-        let result: Result<IpcCommand, _> =
-            serde_json::from_str(r#"{"cmd":"pan-mode","mode":3}"#);
+        let result: Result<IpcCommand, _> = serde_json::from_str(r#"{"cmd":"pan-mode","mode":3}"#);
         assert!(
             result.is_err(),
             "kebab-case pan-mode must not parse (got {result:?})"
