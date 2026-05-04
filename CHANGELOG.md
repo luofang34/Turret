@@ -165,6 +165,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `time_boot_ms` on `GIMBAL_MANAGER_INFORMATION` is now real, not 0.
 - `RxCtx` carries `start_time` so on-demand frames have correct
   uptime.
+- **STorM32 driver: length-aware response read.** The serial read
+  loop in `Storm32Gimbal::send_rc_command` previously stopped at
+  `total_bytes >= 4`, which truncated every multi-byte response.
+  `CMD_GETDATAFIELDS` (IMU1ANGLES, 13 bytes) was the visible victim:
+  the 4 Hz attitude poll emitted "Could not update gimbal status:
+  Incomplete message: got N bytes, expected 13" once every 1-2 s
+  with random `N` between 4 and 12. Replaced with a deadline-bounded
+  loop (200 ms budget) that reads until either the single-byte ACK
+  is received or `STX + LEN + CMD + payload(LEN) + CRC2 = 5 + LEN`
+  bytes have arrived. Garbage-byte recovery is bounded to 3 restarts
+  per call so an unhinged feed can't spin forever. Confirmed on
+  hardware: zero "Incomplete message" warnings over 90 s of active
+  status polling versus baseline ~50 warnings on the same window.
 - `GIMBAL_MANAGER_STATUS.flags` no longer falsely advertises
   `GIMBAL_MANAGER_FLAGS_RETRACT` on every periodic and on-demand
   frame. `GimbalManagerFlags::default()` (rust-mavlink's first-bitflag
