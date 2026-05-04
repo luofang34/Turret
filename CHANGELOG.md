@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-04
+
 ### Added
 - **`selftest` IPC command.** Sweeps the gimbal through six set-points
   (center, ±15° pitch, ±15° yaw, recenter), waits 2.5 s for settle after
@@ -43,59 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verified on STorM32 fw 0.96: pre-cal `SP=0 → PV=-4.7°`, post-cal
   `SP={0, 10, -15} → PV={0.07, 10.06, -14.92}`. Calibration survives
   daemon restart via the persisted state file.
-
-### Changed (BREAKING — IPC wire format)
-- **IPC schema is now uniformly `snake_case`** — both the `cmd`
-  discriminator and field names. Specifically:
-    - `{"cmd":"pan-mode", ...}` → `{"cmd":"pan_mode", ...}`
-    - `{"cmd":"standby", "enable": ...}` → `{"cmd":"standby", "enabled": ...}`
-  The kebab-case `pan-mode` and verb-form `enable` were odd-ones-out
-  in an otherwise snake_case JSON surface — the response side already
-  used `firmware_version`, `pan_mode`, `time_boot_ms`, etc. Old
-  payloads now produce `unknown variant` / `missing field` errors
-  rather than silent mis-parses, so misconfigured clients fail
-  loudly. README example, `{"cmd":"help"}` schema, and round-trip
-  tests in `daemon::models::tests` updated together; CLI subcommand
-  names (`turret pan-mode`, `turret standby true`) remain kebab-case
-  per CLI convention and are unaffected.
-
-### Changed
-- **Bounded IPC client ID space via slot allocator** — IPC client IDs
-  now come from a fixed `0..64` slot pool (previously a monotonic
-  `u32` counter). Each accepted connection claims one slot via an
-  RAII `SlotGuard`; the guard releases the slot and clears the
-  client's per-source tracking entries from `StateManager` on drop.
-  Connections beyond the pool's capacity are rejected with a warn.
-  This bounds the `ControlSource::UnixSocket(u32)` keyspace at the
-  source — combined with MAVLink's `u8` sysid space and the single
-  `Cli` variant, the entire `ControlSource` set is now ≤ 321 values
-  forever, regardless of daemon uptime or IPC churn rate. Slot
-  cleanup ensures a client claiming a recycled slot index isn't
-  penalized by the previous tenant's rate-limit timestamp. Also
-  fixes a latent overflow bug: the old counter used `*id += 1`
-  instead of `wrapping_add(1)`, panicking in debug builds after
-  `u32::MAX` connections.
-- **Bounded `StateManager` per-source tracking maps** — `last_command_at`
-  and `last_rate_at` are now bounded on every write by a two-pass
-  eviction: a 5-minute TTL sweep (normal-path cleanup) followed by a
-  256-entry hard cap that drops the oldest entry when full
-  (burst-path safety net). Without this, a long-running daemon
-  serving transient IPC clients (each connection gets a fresh
-  `ControlSource::UnixSocket(u32)`) accumulated one entry per client
-  lifetime — bounded only by `u32::MAX`. The TTL alone wouldn't
-  protect against a fast burst (10 k connect/disconnect inside the
-  TTL window all look "fresh"); the cap closes that gap. 256 matches
-  MAVLink's `u8` sysid space, so a real MAVLink source is never
-  evicted under normal load. Evicting an active source has minor
-  cost: one rate-limit hit skipped on `last_command_at`, one rate
-  tick under-shot via the 10 ms `MIN_DT` fallback on `last_rate_at`
-  — neither is safety-critical. Tests cover the helper directly,
-  the end-to-end eviction path on both maps, and a burst-stress
-  case that asserts the cap holds. Also splits the inline test
-  module into `state/tests.rs` to keep `state.rs` under the
-  500-line module ceiling.
-
-### Added
 - **Earth-frame yaw + `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE` ingestion** —
   the manager now consumes vehicle attitude from the autopilot and
   honors `GIMBAL_MANAGER_FLAGS_YAW_IN_EARTH_FRAME` on inbound SET_*
@@ -165,8 +114,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tests/mavlink_smoke.rs`** — end-to-end SET_PITCHYAW round-trip
   via UDP, verifies inbound dispatch + arbitrator + attitude broadcast
   in ~250 ms.
+- **Project-scoped `cargo fmt` pre-commit hook for Claude Code sessions.**
+  `.claude/settings.json` registers a `PreToolUse` hook on the `Bash`
+  matcher that intercepts any `git commit` invocation, runs `cargo fmt
+  --all -- --check` from the repo root, and on drift denies the tool call
+  with an actionable message. Non-commit Bash invocations short-circuit
+  via a Python stdin parse + substring check (no jq dep). The hook
+  travels with the repo via `.gitignore` re-include of
+  `.claude/settings.json` + `.claude/hooks/` while keeping
+  `.claude/settings.local.json` ignored. Catches fmt drift one layer
+  earlier than the CI gate, in the UI the human is already looking at.
 
 ### Changed
+- **BREAKING — IPC wire format:** **IPC schema is now uniformly `snake_case`** — both the `cmd`
+  discriminator and field names. Specifically:
+    - `{"cmd":"pan-mode", ...}` → `{"cmd":"pan_mode", ...}`
+    - `{"cmd":"standby", "enable": ...}` → `{"cmd":"standby", "enabled": ...}`
+  The kebab-case `pan-mode` and verb-form `enable` were odd-ones-out
+  in an otherwise snake_case JSON surface — the response side already
+  used `firmware_version`, `pan_mode`, `time_boot_ms`, etc. Old
+  payloads now produce `unknown variant` / `missing field` errors
+  rather than silent mis-parses, so misconfigured clients fail
+  loudly. README example, `{"cmd":"help"}` schema, and round-trip
+  tests in `daemon::models::tests` updated together; CLI subcommand
+  names (`turret pan-mode`, `turret standby true`) remain kebab-case
+  per CLI convention and are unaffected.
+- **Bounded IPC client ID space via slot allocator** — IPC client IDs
+  now come from a fixed `0..64` slot pool (previously a monotonic
+  `u32` counter). Each accepted connection claims one slot via an
+  RAII `SlotGuard`; the guard releases the slot and clears the
+  client's per-source tracking entries from `StateManager` on drop.
+  Connections beyond the pool's capacity are rejected with a warn.
+  This bounds the `ControlSource::UnixSocket(u32)` keyspace at the
+  source — combined with MAVLink's `u8` sysid space and the single
+  `Cli` variant, the entire `ControlSource` set is now ≤ 321 values
+  forever, regardless of daemon uptime or IPC churn rate. Slot
+  cleanup ensures a client claiming a recycled slot index isn't
+  penalized by the previous tenant's rate-limit timestamp. Also
+  fixes a latent overflow bug: the old counter used `*id += 1`
+  instead of `wrapping_add(1)`, panicking in debug builds after
+  `u32::MAX` connections.
+- **Bounded `StateManager` per-source tracking maps** — `last_command_at`
+  and `last_rate_at` are now bounded on every write by a two-pass
+  eviction: a 5-minute TTL sweep (normal-path cleanup) followed by a
+  256-entry hard cap that drops the oldest entry when full
+  (burst-path safety net). Without this, a long-running daemon
+  serving transient IPC clients (each connection gets a fresh
+  `ControlSource::UnixSocket(u32)`) accumulated one entry per client
+  lifetime — bounded only by `u32::MAX`. The TTL alone wouldn't
+  protect against a fast burst (10 k connect/disconnect inside the
+  TTL window all look "fresh"); the cap closes that gap. 256 matches
+  MAVLink's `u8` sysid space, so a real MAVLink source is never
+  evicted under normal load. Evicting an active source has minor
+  cost: one rate-limit hit skipped on `last_command_at`, one rate
+  tick under-shot via the 10 ms `MIN_DT` fallback on `last_rate_at`
+  — neither is safety-critical. Tests cover the helper directly,
+  the end-to-end eviction path on both maps, and a burst-stress
+  case that asserts the cap holds. Also splits the inline test
+  module into `state/tests.rs` to keep `state.rs` under the
+  500-line module ceiling.
 - **Single-owner gimbal task** — every gimbal call now runs through
   `daemon::gimbal_handle::GimbalHandle`, which routes the underlying
   sync I/O via `tokio::task::spawn_blocking`. Eliminates the previous
