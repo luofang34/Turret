@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Bounded `StateManager` per-source tracking maps** — `last_command_at`
+  and `last_rate_at` are now lazily evicted on every write: entries
+  whose timestamp is older than a 5-minute TTL are dropped via
+  `HashMap::retain`. Without this, a long-running daemon serving
+  transient IPC clients (each connection gets a fresh
+  `ControlSource::UnixSocket(u32)`) accumulated one entry per
+  client lifetime — bounded only by `u32::MAX`, ~1 MB per 30 k
+  connections in practice. Map size now approximates "currently
+  active sources" instead of "sources ever seen". Tests cover
+  the helper directly and the end-to-end eviction path on both
+  maps. Also splits the inline test module into `state/tests.rs`
+  to keep `state.rs` under the 500-line module ceiling.
+
 ### Added
 - **Earth-frame yaw + `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE` ingestion** —
   the manager now consumes vehicle attitude from the autopilot and

@@ -9,6 +9,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::warn;
 
+/// How long a per-source `Instant` stays in `last_command_at` /
+/// `last_rate_at` before lazy eviction drops it. After this much
+/// silence the source is treated as fresh — the rate-limit window
+/// resets and the rate integrator's `dt` falls back to the minimum.
+///
+/// The maps would otherwise grow without bound under workloads that
+/// churn IPC client IDs (each new connection gets a unique
+/// `UnixSocket(u32)`) — at 1000 clients/day a 30-day daemon
+/// accumulates ~30k entries (~1 MB). Five minutes is long enough
+/// that the same active source isn't churned in and out of the map
+/// during normal use, short enough that disconnected-client entries
+/// don't linger past a typical operator session.
+const SOURCE_TRACKING_TTL: Duration = Duration::from_secs(300);
+
 /// Thread-safe gimbal state manager.
 ///
 /// Uses `parking_lot::RwLock` (not `std::sync::RwLock`) so a panicking
@@ -87,8 +101,14 @@ impl StateManager {
     /// Mark `source` as having issued a rate command at `now`. The rate
     /// integrator calls this after computing the new target so the next
     /// rate tick from the same source sees the right `dt`.
+    ///
+    /// Lazily evicts entries older than the per-source tracking TTL
+    /// (5 min) on every write to bound map growth. See
+    /// `check_and_record_rate` for the same pattern on `last_command_at`.
     pub fn record_rate_tick(&self, source: ControlSource, now: Instant) {
-        self.last_rate_at.write().insert(source, now);
+        let mut map = self.last_rate_at.write();
+        evict_stale(&mut map, now);
+        map.insert(source, now);
     }
 
     /// Get current gimbal state (blocking read)
@@ -179,17 +199,18 @@ impl StateManager {
     /// sources are tracked independently — a noisy autopilot doesn't
     /// throttle an IPC client.
     ///
-    /// Map growth: bounded by the number of distinct `ControlSource`s
-    /// the daemon has ever seen. `Mavlink(u8)` caps at 256, `Cli` is one,
-    /// `UnixSocket(u32)` grows over time. For long-running daemons that
-    /// serve thousands of IPC clients this should grow eviction; for
-    /// now it's an accepted slow leak.
+    /// Map size is bounded via lazy eviction (entries older than the
+    /// 5-minute per-source tracking TTL are dropped on every write),
+    /// so a long-running daemon serving many transient IPC clients
+    /// approximates "size = currently-active sources" instead of
+    /// "size = sources ever seen".
     fn check_and_record_rate(&self, source: &ControlSource) -> bool {
         if self.min_command_interval.is_zero() {
             return true;
         }
         let now = Instant::now();
         let mut map = self.last_command_at.write();
+        evict_stale(&mut map, now);
         if let Some(prev) = map.get(source) {
             if now.duration_since(*prev) < self.min_command_interval {
                 warn!(
@@ -222,6 +243,18 @@ impl StateManager {
     }
 }
 
+/// Drop entries from a `(ControlSource, Instant)` map whose timestamp is
+/// older than [`SOURCE_TRACKING_TTL`]. Called on every write to the
+/// per-source tracking maps so the daemon doesn't accumulate one entry
+/// per IPC client lifetime over a multi-week run.
+///
+/// `retain` is O(map_size); for typical workloads (handful of active
+/// sources) this is microseconds, well below the cost of the serial
+/// transaction that follows.
+fn evict_stale(map: &mut HashMap<ControlSource, Instant>, now: Instant) {
+    map.retain(|_, t| now.duration_since(*t) <= SOURCE_TRACKING_TTL);
+}
+
 impl Default for StateManager {
     fn default() -> Self {
         Self::new()
@@ -229,204 +262,5 @@ impl Default for StateManager {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    use super::*;
-    use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
-
-    #[test]
-    fn primary_control_default_allows_all() {
-        let m = StateManager::new();
-        assert!(m.is_primary_allowed(1, 1));
-        assert!(m.is_primary_allowed(42, 200));
-    }
-
-    #[test]
-    fn primary_control_exact_match_only() {
-        let m = StateManager::new();
-        m.set_primary_control(PrimaryControl {
-            primary_sysid: 7,
-            primary_compid: 190,
-            secondary_sysid: 0,
-            secondary_compid: 0,
-        });
-        assert!(m.is_primary_allowed(7, 190));
-        assert!(!m.is_primary_allowed(7, 191));
-        assert!(!m.is_primary_allowed(8, 190));
-    }
-
-    #[test]
-    fn test_state_manager_init() {
-        let manager = StateManager::new();
-        let state = manager.get_state();
-
-        assert_eq!(state.yaw, 0.0);
-        assert_eq!(state.pitch, 0.0);
-        assert_eq!(state.roll, 0.0);
-    }
-
-    #[test]
-    fn test_state_update() {
-        let manager = StateManager::new();
-        assert!(manager.get_state().measured_at.is_none());
-
-        manager.update_measured_angles(10.0, 20.0, 30.0);
-
-        let state = manager.get_state();
-        assert_eq!(state.yaw, 10.0);
-        assert_eq!(state.pitch, 20.0);
-        assert_eq!(state.roll, 30.0);
-        assert!(state.measured_at.is_some());
-    }
-
-    #[test]
-    fn vehicle_yaw_returns_none_until_set() {
-        let m = StateManager::new();
-        assert!(m.vehicle_yaw_deg(Duration::from_secs(1)).is_none());
-    }
-
-    #[test]
-    fn vehicle_yaw_returns_value_within_window() {
-        let m = StateManager::new();
-        m.update_vehicle_yaw(42.5);
-        let yaw = m.vehicle_yaw_deg(Duration::from_secs(1));
-        assert!(yaw.is_some());
-        assert!((yaw.unwrap() - 42.5).abs() < 1e-4);
-    }
-
-    #[test]
-    fn vehicle_yaw_returns_none_when_stale() {
-        let m = StateManager::new();
-        m.update_vehicle_yaw(42.5);
-        // 0 ns max-age means "everything is stale" — proxy for the
-        // real "last AUTOPILOT_STATE was > 1 s ago" case without
-        // sleeping the test.
-        assert!(m.vehicle_yaw_deg(Duration::ZERO).is_none());
-    }
-
-    #[test]
-    fn rate_limit_disabled_by_default() {
-        // `StateManager::new` constructs with ZERO interval — the
-        // rate-limit branch returns `true` immediately. The 1 ms gap
-        // between commands guarantees each `GimbalCommand`'s
-        // `SystemTime::now()` is strictly later than the previous one,
-        // so the existing same-priority-same-source priority check
-        // (which requires `command.timestamp > prev.timestamp`) doesn't
-        // contaminate this test.
-        let manager = StateManager::new();
-        let cmd = || {
-            GimbalCommand::new(
-                ControlSource::Cli,
-                CommandMode::Position,
-                Some(0.0),
-                Some(0.0),
-                Some(0.0),
-            )
-        };
-        assert!(manager.set_command(cmd()));
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        assert!(manager.set_command(cmd()));
-    }
-
-    #[test]
-    fn rate_limit_blocks_back_to_back_same_source() {
-        let manager = StateManager::with_min_command_interval(std::time::Duration::from_millis(50));
-        let cmd = || {
-            GimbalCommand::new(
-                ControlSource::Mavlink(1),
-                CommandMode::Position,
-                Some(0.0),
-                Some(0.0),
-                Some(0.0),
-            )
-        };
-        // First accepted; second within 50 ms rejected.
-        assert!(manager.set_command(cmd()));
-        assert!(!manager.set_command(cmd()));
-    }
-
-    #[test]
-    fn rate_limit_isolates_per_source() {
-        // A noisy GCS must not throttle a different GCS. We use two
-        // distinct same-priority MAVLink sources (`Mavlink(2)` and
-        // `Mavlink(3)`, both priority 50) so the priority arbitration
-        // doesn't reject the second command for unrelated reasons —
-        // this test isolates the rate-limit dimension specifically.
-        let manager =
-            StateManager::with_min_command_interval(std::time::Duration::from_millis(500));
-        let cmd_from = |sysid: u8| {
-            GimbalCommand::new(
-                ControlSource::Mavlink(sysid),
-                CommandMode::Position,
-                Some(0.0),
-                Some(0.0),
-                Some(0.0),
-            )
-        };
-        assert!(manager.set_command(cmd_from(2)));
-        // Same-source second command is rate-limited …
-        assert!(!manager.set_command(cmd_from(2)));
-        // … but a different source at the same priority goes through.
-        assert!(manager.set_command(cmd_from(3)));
-    }
-
-    #[test]
-    fn rate_limit_clears_after_interval() {
-        let interval = std::time::Duration::from_millis(20);
-        let manager = StateManager::with_min_command_interval(interval);
-        let cmd = || {
-            GimbalCommand::new(
-                ControlSource::Cli,
-                CommandMode::Position,
-                Some(0.0),
-                Some(0.0),
-                Some(0.0),
-            )
-        };
-        assert!(manager.set_command(cmd()));
-        // Sleep a hair past the window and the same source goes through
-        // again. Cheap real-time dependency: 20 ms test interval, 60 ms
-        // sleep gives 3× margin against scheduler jitter on slow CI.
-        std::thread::sleep(std::time::Duration::from_millis(60));
-        assert!(manager.set_command(cmd()));
-    }
-
-    #[test]
-    fn test_command_priority() {
-        let manager = StateManager::new();
-
-        // Low priority command
-        let cmd1 = GimbalCommand::new(
-            ControlSource::Cli,
-            CommandMode::Position,
-            Some(0.0),
-            Some(0.0),
-            Some(0.0),
-        );
-        assert!(manager.set_command(cmd1.clone()));
-
-        // High priority command should override
-        let cmd2 = GimbalCommand::new(
-            ControlSource::Mavlink(1),
-            CommandMode::Position,
-            Some(10.0),
-            Some(10.0),
-            Some(10.0),
-        );
-        assert!(manager.set_command(cmd2.clone()));
-
-        // Low priority command should be rejected
-        let cmd3 = GimbalCommand::new(
-            ControlSource::UnixSocket(1),
-            CommandMode::Position,
-            Some(20.0),
-            Some(20.0),
-            Some(20.0),
-        );
-        assert!(!manager.set_command(cmd3));
-
-        // Verify last command is cmd2
-        let last = manager.get_last_command().unwrap();
-        assert_eq!(last.yaw, Some(10.0));
-    }
-}
+#[path = "state/tests.rs"]
+mod tests;
