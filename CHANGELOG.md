@@ -150,6 +150,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `time_boot_ms` on `GIMBAL_MANAGER_INFORMATION` is now real, not 0.
 - `RxCtx` carries `start_time` so on-demand frames have correct
   uptime.
+- `GIMBAL_MANAGER_STATUS.flags` no longer falsely advertises
+  `GIMBAL_MANAGER_FLAGS_RETRACT` on every periodic and on-demand
+  frame. `GimbalManagerFlags::default()` (rust-mavlink's first-bitflag
+  default) happens to evaluate to `RETRACT`; replaced with an explicit
+  `YAW_IN_VEHICLE_FRAME` so manager status mirrors what
+  `GIMBAL_DEVICE_ATTITUDE_STATUS` already publishes. Regression test
+  added in `handlers/build.rs::tests`.
 
 ## [0.1.1] - 2025-09-30
 
