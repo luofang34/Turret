@@ -10,18 +10,36 @@ use std::time::{Duration, Instant};
 use tracing::warn;
 
 /// How long a per-source `Instant` stays in `last_command_at` /
-/// `last_rate_at` before lazy eviction drops it. After this much
-/// silence the source is treated as fresh — the rate-limit window
-/// resets and the rate integrator's `dt` falls back to the minimum.
-///
-/// The maps would otherwise grow without bound under workloads that
-/// churn IPC client IDs (each new connection gets a unique
-/// `UnixSocket(u32)`) — at 1000 clients/day a 30-day daemon
-/// accumulates ~30k entries (~1 MB). Five minutes is long enough
-/// that the same active source isn't churned in and out of the map
-/// during normal use, short enough that disconnected-client entries
-/// don't linger past a typical operator session.
+/// `last_rate_at` before lazy eviction drops it on the next write.
+/// The "normal cleanup" knob — most workloads never reach the hard
+/// cap, so the TTL is what keeps map size proportional to active
+/// sources. After this much silence the source is treated as fresh:
+/// the rate-limit window resets and the rate integrator's `dt`
+/// falls back to the minimum.
 const SOURCE_TRACKING_TTL: Duration = Duration::from_secs(300);
+
+/// Hard upper bound on per-source tracking map size. The TTL alone
+/// only protects against long-term accumulation; under a burst that
+/// churns through IPC client IDs faster than the TTL can clear them
+/// (a buggy or malicious client looping connect/disconnect, an
+/// automated test harness, etc.) the map could still spike. When at
+/// this many entries an insert evicts the single oldest one.
+///
+/// 256 matches MAVLink's sysid space (`u8`), so even if every
+/// possible MAVLink sysid is alive we never evict a "real" MAVLink
+/// source — only the rest of the map (IPC slots) churns. At
+/// `~32 B/entry`, the bound is ~8 KB per map, ~16 KB across both —
+/// negligible on any platform we ship to.
+///
+/// Eviction of an active source is functionally minor:
+///   - `last_command_at`: the source's next command is treated as
+///     "first time", skipping one rate-limit hit. Not security-
+///     critical (gimbal-limit clamping happens earlier in the
+///     pipeline; rate-limit is a fairness knob, not a safety gate).
+///   - `last_rate_at`: the next rate tick falls back to the 10 ms
+///     `MIN_DT`, under-shooting one position increment. Operator
+///     feels a one-frame jitter; the next tick recovers.
+const MAX_TRACKED_SOURCES: usize = 256;
 
 /// Thread-safe gimbal state manager.
 ///
@@ -102,12 +120,13 @@ impl StateManager {
     /// integrator calls this after computing the new target so the next
     /// rate tick from the same source sees the right `dt`.
     ///
-    /// Lazily evicts entries older than the per-source tracking TTL
-    /// (5 min) on every write to bound map growth. See
-    /// `check_and_record_rate` for the same pattern on `last_command_at`.
+    /// Bounds map growth on every write: TTL sweep (5-min entries dropped)
+    /// then a hard cap that evicts the oldest entry if the map is at
+    /// capacity. See `check_and_record_rate` for the same pattern on
+    /// `last_command_at`.
     pub fn record_rate_tick(&self, source: ControlSource, now: Instant) {
         let mut map = self.last_rate_at.write();
-        evict_stale(&mut map, now);
+        evict_for_insert(&mut map, now);
         map.insert(source, now);
     }
 
@@ -199,18 +218,18 @@ impl StateManager {
     /// sources are tracked independently — a noisy autopilot doesn't
     /// throttle an IPC client.
     ///
-    /// Map size is bounded via lazy eviction (entries older than the
-    /// 5-minute per-source tracking TTL are dropped on every write),
-    /// so a long-running daemon serving many transient IPC clients
-    /// approximates "size = currently-active sources" instead of
-    /// "size = sources ever seen".
+    /// Map size is bounded by two complementary mechanisms applied on
+    /// every write: a 5-minute TTL sweep (normal-path cleanup) plus a
+    /// 256-entry hard cap (burst-path safety net) that evicts the
+    /// oldest entry when full. This keeps a long-running daemon's
+    /// memory bounded even under pathological IPC churn.
     fn check_and_record_rate(&self, source: &ControlSource) -> bool {
         if self.min_command_interval.is_zero() {
             return true;
         }
         let now = Instant::now();
         let mut map = self.last_command_at.write();
-        evict_stale(&mut map, now);
+        evict_for_insert(&mut map, now);
         if let Some(prev) = map.get(source) {
             if now.duration_since(*prev) < self.min_command_interval {
                 warn!(
@@ -243,16 +262,27 @@ impl StateManager {
     }
 }
 
-/// Drop entries from a `(ControlSource, Instant)` map whose timestamp is
-/// older than [`SOURCE_TRACKING_TTL`]. Called on every write to the
-/// per-source tracking maps so the daemon doesn't accumulate one entry
-/// per IPC client lifetime over a multi-week run.
+/// Bound the per-source map's size before an insert. Two passes:
 ///
-/// `retain` is O(map_size); for typical workloads (handful of active
-/// sources) this is microseconds, well below the cost of the serial
-/// transaction that follows.
-fn evict_stale(map: &mut HashMap<ControlSource, Instant>, now: Instant) {
+/// 1. TTL sweep: drop every entry older than the 5-minute tracking TTL.
+///    Cheap O(n) `retain`. Handles the steady-state case where the
+///    working set is tiny but stale entries from disconnected clients
+///    would otherwise linger.
+/// 2. Hard-cap pass: if the map is *still* at capacity (every entry is
+///    fresh — burst workload), drop the single oldest entry to make
+///    room for the new one. O(n) find-min, only fires under the burst.
+///
+/// Together these guarantee post-insert `len ≤ MAX_TRACKED_SOURCES`
+/// regardless of workload. See `MAX_TRACKED_SOURCES` for the rationale
+/// on cap value and the (minor) functional cost of evicting an active
+/// source.
+fn evict_for_insert(map: &mut HashMap<ControlSource, Instant>, now: Instant) {
     map.retain(|_, t| now.duration_since(*t) <= SOURCE_TRACKING_TTL);
+    if map.len() >= MAX_TRACKED_SOURCES {
+        if let Some(oldest_key) = map.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
+            map.remove(&oldest_key);
+        }
+    }
 }
 
 impl Default for StateManager {
