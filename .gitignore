@@ -1,6 +1,12 @@
 /target
 .DS_Store
-/.claude
+# .claude/ holds Claude Code config. Track the team-wide bits
+# (settings.json, hooks/) so they travel with the repo; keep the
+# per-developer overrides (settings.local.json) ignored.
+/.claude/*
+!/.claude/settings.json
+!/.claude/hooks/
+/.claude/settings.local.json
 CLAUDE.md
 FIXME.md
 REFACTORING_PLAN.md
