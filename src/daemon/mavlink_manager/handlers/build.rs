@@ -50,21 +50,32 @@ pub(super) fn message_id_from_param(p: f32) -> Option<u32> {
 /// by the 5 Hz publish loop and the on-demand `MAV_CMD_REQUEST_MESSAGE`
 /// responder, so periodic and on-demand frames stay byte-identical.
 ///
-/// `flags` advertises `YAW_IN_VEHICLE_FRAME` to mirror what
-/// `GIMBAL_DEVICE_ATTITUDE_STATUS` actually publishes. `GimbalManagerFlags::default()`
-/// is *not* used here — rust-mavlink generates the default as the first
-/// bitflag variant, which happens to be `RETRACT`. Letting that leak out
-/// would make every `GIMBAL_MANAGER_STATUS` frame falsely advertise the
-/// gimbal as retracted to any GCS / autopilot reading the bus.
+/// `flags` reflects the daemon's current state, not capabilities (those go
+/// in `GIMBAL_MANAGER_INFORMATION`):
+/// - When standby is on, only `RETRACT` is set — per the MAVLink spec,
+///   `RETRACT` "takes precedence over all other flags" because the gimbal
+///   isn't stabilizing anything.
+/// - Otherwise, `YAW_IN_VEHICLE_FRAME` mirrors what
+///   `GIMBAL_DEVICE_ATTITUDE_STATUS` already publishes, so the two frames
+///   describe the same yaw reference.
+///
+/// `GimbalManagerFlags::default()` is intentionally avoided — rust-mavlink
+/// generates it as the first bitflag variant (`RETRACT`), which would make
+/// every frame falsely advertise the gimbal as retracted while operational.
 pub(super) fn build_gimbal_manager_status_data(
     state_manager: &StateManager,
     config: &MavlinkConfig,
     start_time: Instant,
 ) -> GIMBAL_MANAGER_STATUS_DATA {
     let pc = state_manager.get_primary_control();
+    let flags = if state_manager.is_standby() {
+        GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_RETRACT
+    } else {
+        GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_VEHICLE_FRAME
+    };
     GIMBAL_MANAGER_STATUS_DATA {
         time_boot_ms: start_time.elapsed().as_millis() as u32,
-        flags: GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_VEHICLE_FRAME,
+        flags,
         gimbal_device_id: config.compid,
         primary_control_sysid: pc.primary_sysid,
         primary_control_compid: pc.primary_compid,
@@ -291,13 +302,8 @@ mod tests {
         assert!(data.failure_flags.is_empty());
     }
 
-    #[test]
-    fn build_manager_status_does_not_advertise_retract() {
-        // Regression: `GimbalManagerFlags::default()` is rust-mavlink's
-        // first-bitflag default, which is `GIMBAL_MANAGER_FLAGS_RETRACT`.
-        // Letting it leak out makes every periodic / on-demand status
-        // frame falsely tell GCSs that the gimbal is retracted.
-        let cfg = MavlinkConfig {
+    fn test_mavlink_config() -> MavlinkConfig {
+        MavlinkConfig {
             enabled: true,
             transport: Default::default(),
             bind_addr: "0.0.0.0".parse().unwrap(),
@@ -305,21 +311,60 @@ mod tests {
             sysid: 1,
             compid: 154,
             limits: Default::default(),
-        };
+        }
+    }
+
+    #[test]
+    fn build_manager_status_active_advertises_yaw_in_vehicle_frame() {
+        // Regression: `GimbalManagerFlags::default()` is rust-mavlink's
+        // first-bitflag default, which is `GIMBAL_MANAGER_FLAGS_RETRACT`.
+        // Letting it leak out makes every periodic / on-demand status
+        // frame falsely tell GCSs that the gimbal is retracted.
+        let cfg = test_mavlink_config();
         let state = StateManager::new();
+        // Default state has standby = false.
         let data = build_gimbal_manager_status_data(&state, &cfg, Instant::now());
 
         assert!(
             !data
                 .flags
                 .contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_RETRACT),
-            "flags must not advertise RETRACT (got {:?})",
+            "flags must not advertise RETRACT while active (got {:?})",
             data.flags
         );
         assert!(
             data.flags
                 .contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_VEHICLE_FRAME),
             "flags should mirror GIMBAL_DEVICE_ATTITUDE_STATUS frame (got {:?})",
+            data.flags
+        );
+    }
+
+    #[test]
+    fn build_manager_status_standby_advertises_retract_only() {
+        // Per MAVLink spec, GIMBAL_MANAGER_FLAGS_RETRACT "takes precedence
+        // over all other flags" because the gimbal isn't stabilizing
+        // anything. So when the daemon has commanded standby=on, the
+        // status frame must drop YAW_IN_VEHICLE_FRAME and only carry
+        // RETRACT — anything else is a lie about what the gimbal is
+        // doing.
+        let cfg = test_mavlink_config();
+        let state = StateManager::new();
+        state.update_standby(true);
+        let data = build_gimbal_manager_status_data(&state, &cfg, Instant::now());
+
+        assert!(
+            data.flags
+                .contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_RETRACT),
+            "standby=on must advertise RETRACT (got {:?})",
+            data.flags
+        );
+        assert!(
+            !data
+                .flags
+                .contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_VEHICLE_FRAME),
+            "standby=on must not advertise YAW_IN_VEHICLE_FRAME alongside \
+             RETRACT — RETRACT takes precedence (got {:?})",
             data.flags
         );
     }
