@@ -303,6 +303,14 @@ pub enum IpcCommand {
         /// New yaw offset, operator-frame degrees.
         deg: f32,
     },
+    /// Sweep the gimbal through a small set of known set-points and
+    /// verify the IMU-reported attitude follows within tolerance. Each
+    /// step waits ~1.5 s for settling, then samples a fresh
+    /// `get_attitude` (operator-frame, post-calibration). Restores the
+    /// initial pose at the end. Refuses if standby is engaged. Response
+    /// data: `{passed, tolerance_deg, samples[{sp, pv, error_deg}],
+    /// max_error_deg{pitch, roll, yaw}}`.
+    Selftest,
     /// Return a JSON description of all available commands.
     Help,
 }
@@ -459,5 +467,11 @@ mod tests {
             "expected snake_case discriminator, got {s}"
         );
         assert!(s.contains(r#""deg":1.25"#), "got {s}");
+    }
+
+    #[test]
+    fn deserialize_selftest() {
+        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd":"selftest"}"#).unwrap();
+        assert!(matches!(cmd, IpcCommand::Selftest));
     }
 }

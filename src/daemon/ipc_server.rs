@@ -237,6 +237,8 @@ impl IpcServer {
 
             IpcCommand::SetYawOffset { deg } => set_yaw_offset(gimbal, deg),
 
+            IpcCommand::Selftest => selftest(gimbal, state_manager).await,
+
             IpcCommand::Help => {
                 let help_text = serde_json::json!({
                     "commands": [
@@ -248,6 +250,7 @@ impl IpcServer {
                         {"cmd": "standby", "params": {"enabled": "bool"}},
                         {"cmd": "calibrate_yaw"},
                         {"cmd": "set_yaw_offset", "params": {"deg": "f32"}},
+                        {"cmd": "selftest"},
                         {"cmd": "help"},
                     ]
                 });
@@ -258,11 +261,12 @@ impl IpcServer {
 }
 
 /// How long to wait for the gimbal to settle on a commanded angle before
-/// sampling its IMU. The storm32's yaw motor traverses ~360°/s; the
-/// largest offset we'd ever calibrate against is the gimbal's mechanical
-/// yaw range, so 1.5 s gives ample margin even from a worst-case
-/// starting pose.
-const CALIBRATION_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+/// sampling its IMU. Sized for a worst-case 30° swing at the empirical
+/// ~15°/s observed in-flight on a stock STorM32 — covered in ~2 s with
+/// margin to spare, so 2.5 s is the conservative pick. Used for both
+/// `calibrate_yaw` (one settle on a small motion) and `selftest` (six
+/// settles on motions up to 30°).
+const CALIBRATION_SETTLE: std::time::Duration = std::time::Duration::from_millis(2500);
 
 /// Auto-calibrate the yaw zero-offset.
 ///
@@ -382,6 +386,137 @@ fn set_yaw_offset(gimbal: &GimbalHandle, deg: f32) -> IpcResponse {
 
     let mut data = serde_json::json!({ "yaw_offset_deg": deg });
     if let Some(w) = persistence_warning {
+        data["warning"] = serde_json::Value::String(w);
+    }
+    IpcResponse::ok_with_data(data)
+}
+
+/// Tolerance for the selftest sweep. Operator-frame, post-calibration —
+/// well above expected IMU noise (~0.1° typical) but tight enough that a
+/// real pointing error from a bad calibration / loose belt / wrong limit
+/// is caught.
+const SELFTEST_TOLERANCE_DEG: f32 = 1.0;
+
+/// Sweep the gimbal through known set-points and report SP-vs-PV errors.
+///
+/// Operator-frame throughout: `set_attitude` writes the SP unchanged and
+/// `get_attitude` returns IMU-minus-calibration-offset, so a calibrated
+/// gimbal should land within ~0.1° of every test point. Refuses if the
+/// daemon believes the gimbal is in standby — without active stabilization,
+/// PV reflects gravity rather than commanded angle, and any "failure"
+/// would be misleading.
+///
+/// Bypasses the arbitrator (one-shot operator action, like calibration).
+/// Restores the original pose at the end via a single `set_attitude`,
+/// best-effort — restoration failures surface as a `warning` field on
+/// the response without overriding `passed`.
+async fn selftest(gimbal: &GimbalHandle, state_manager: &StateManager) -> IpcResponse {
+    if state_manager.is_standby() {
+        return IpcResponse::error(
+            "selftest: gimbal is in standby (motors disengaged). \
+             Toggle standby off before running selftest.",
+        );
+    }
+
+    // Snapshot the current pose so we can restore the operator's
+    // starting position. If we can't even read attitude, bail
+    // immediately — running a sweep without a baseline would leave the
+    // gimbal in an unknown pose at the end.
+    let original = match gimbal.get_attitude().await {
+        Ok(att) => att,
+        Err(e) => {
+            return IpcResponse::error(format!("selftest: failed to read initial pose: {e}"));
+        }
+    };
+
+    // Modest sweep: pitch ±15°, yaw ±15°, plus center entry/exit so we
+    // see "did the gimbal recover from the largest displacement". Roll
+    // is skipped because most installations either have a roll-locked
+    // setup (PAN modes 1/2/4) or an unbalanced payload that makes large
+    // roll commands physically problematic.
+    let test_points: &[(f32, f32, f32)] = &[
+        (0.0, 0.0, 0.0),
+        (15.0, 0.0, 0.0),
+        (-15.0, 0.0, 0.0),
+        (0.0, 0.0, 15.0),
+        (0.0, 0.0, -15.0),
+        (0.0, 0.0, 0.0),
+    ];
+
+    let mut samples: Vec<serde_json::Value> = Vec::with_capacity(test_points.len());
+    let mut max_pitch_err = 0.0_f32;
+    let mut max_roll_err = 0.0_f32;
+    let mut max_yaw_err = 0.0_f32;
+    let mut passed = true;
+    let mut aborted_at: Option<String> = None;
+
+    for &(p, r, y) in test_points {
+        if let Err(e) = gimbal.set_attitude(p, r, y).await {
+            aborted_at = Some(format!("set_attitude({p}, {r}, {y}) failed: {e}"));
+            passed = false;
+            break;
+        }
+        tokio::time::sleep(CALIBRATION_SETTLE).await;
+        let pv = match gimbal.get_attitude().await {
+            Ok(att) => att,
+            Err(e) => {
+                aborted_at = Some(format!("get_attitude after SP=({p}, {r}, {y}) failed: {e}"));
+                passed = false;
+                break;
+            }
+        };
+        let ep = (p - pv.pitch).abs();
+        let er = (r - pv.roll).abs();
+        let ey = (y - pv.yaw).abs();
+        max_pitch_err = max_pitch_err.max(ep);
+        max_roll_err = max_roll_err.max(er);
+        max_yaw_err = max_yaw_err.max(ey);
+        if ep > SELFTEST_TOLERANCE_DEG || er > SELFTEST_TOLERANCE_DEG || ey > SELFTEST_TOLERANCE_DEG
+        {
+            passed = false;
+        }
+        samples.push(serde_json::json!({
+            "sp":        {"pitch": p,        "roll": r,        "yaw": y},
+            "pv":        {"pitch": pv.pitch, "roll": pv.roll,  "yaw": pv.yaw},
+            "error_deg": {"pitch": ep,       "roll": er,       "yaw": ey},
+        }));
+    }
+
+    // Best-effort pose restoration. Don't override `passed` on failure —
+    // the sweep itself succeeded or didn't independently of whether we
+    // could put the gimbal back where the operator had it.
+    let restore_warning = match gimbal
+        .set_attitude(original.pitch, original.roll, original.yaw)
+        .await
+    {
+        Ok(()) => None,
+        Err(e) => {
+            warn!("selftest: failed to restore initial pose: {e}");
+            Some(format!(
+                "selftest sweep finished but the initial pose could not be restored: {e}"
+            ))
+        }
+    };
+
+    info!(
+        "Selftest: passed={}, max_err deg pitch={:.3} roll={:.3} yaw={:.3}",
+        passed, max_pitch_err, max_roll_err, max_yaw_err
+    );
+
+    let mut data = serde_json::json!({
+        "passed": passed,
+        "tolerance_deg": SELFTEST_TOLERANCE_DEG,
+        "samples": samples,
+        "max_error_deg": {
+            "pitch": max_pitch_err,
+            "roll":  max_roll_err,
+            "yaw":   max_yaw_err,
+        },
+    });
+    if let Some(w) = aborted_at {
+        data["aborted_at"] = serde_json::Value::String(w);
+    }
+    if let Some(w) = restore_warning {
         data["warning"] = serde_json::Value::String(w);
     }
     IpcResponse::ok_with_data(data)

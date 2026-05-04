@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`selftest` IPC command.** Sweeps the gimbal through six set-points
+  (center, ±15° pitch, ±15° yaw, recenter), waits 2.5 s for settle after
+  each, samples a fresh `get_attitude` (operator-frame, post-calibration),
+  and reports per-sample SP / PV / error plus per-axis max error and a
+  pass/fail against a 1° tolerance. Refuses if the daemon believes the
+  gimbal is in standby — without active stabilization, PV reflects
+  gravity rather than commanded angle and "failure" would be misleading.
+  Bypasses the arbitrator (one-shot operator action). Restores the
+  initial pose at the end best-effort; restoration failures surface
+  as a `warning` field on the response without overriding `passed`.
+  Hardware-verified on a calibrated STorM32 fw 0.96: `passed=true`,
+  `max_error_deg = {pitch: 0.03, roll: 0.0, yaw: 0.27}`. The same
+  command on a not-yet-calibrated gimbal cleanly surfaces the bias as
+  per-axis errors above the tolerance.
 - **Yaw zero-offset calibration (no GUI required).** The daemon now owns a
   yaw bias compensation between the operator-facing command frame and the
   IMU-reported readback frame. Two new IPC commands:
