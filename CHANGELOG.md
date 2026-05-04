@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING — IPC wire format)
+- **IPC schema is now uniformly `snake_case`** — both the `cmd`
+  discriminator and field names. Specifically:
+    - `{"cmd":"pan-mode", ...}` → `{"cmd":"pan_mode", ...}`
+    - `{"cmd":"standby", "enable": ...}` → `{"cmd":"standby", "enabled": ...}`
+  The kebab-case `pan-mode` and verb-form `enable` were odd-ones-out
+  in an otherwise snake_case JSON surface — the response side already
+  used `firmware_version`, `pan_mode`, `time_boot_ms`, etc. Old
+  payloads now produce `unknown variant` / `missing field` errors
+  rather than silent mis-parses, so misconfigured clients fail
+  loudly. README example, `{"cmd":"help"}` schema, and round-trip
+  tests in `daemon::models::tests` updated together; CLI subcommand
+  names (`turret pan-mode`, `turret standby true`) remain kebab-case
+  per CLI convention and are unaffected.
+
 ### Changed
 - **Bounded IPC client ID space via slot allocator** — IPC client IDs
   now come from a fixed `0..64` slot pool (previously a monotonic
