@@ -110,6 +110,35 @@ them (the gimbal physically goes to the asked-for angle), and the
 calibration offset is subtracted from the IMU's report before it reaches
 any consumer (IPC `status`, MAVLink `GIMBAL_DEVICE_ATTITUDE_STATUS`).
 
+### Self-test
+
+Verify SP→PV agreement across the gimbal's working range without leaving
+the daemon — useful both as a post-calibration check and as a
+quick-and-dirty health probe before a mission:
+
+```bash
+echo '{"cmd": "selftest"}' | nc -U /tmp/turret.sock -q 20
+```
+
+The daemon sweeps `(0,0,0) → (15,0,0) → (-15,0,0) → (0,0,15) →
+(0,0,-15) → (0,0,0)`, waits 2.5 s after each step, samples
+operator-frame attitude, and returns per-sample SP/PV/error plus per-axis
+max error and a pass/fail against a 1° tolerance. The whole run takes
+~16 s. Refuses with an error if standby is engaged. The original pose is
+restored at the end.
+
+A clean run on a calibrated gimbal looks like:
+
+```json
+{"passed": true,
+ "tolerance_deg": 1.0,
+ "max_error_deg": {"pitch": 0.03, "roll": 0.0, "yaw": 0.27},
+ "samples": [...]}
+```
+
+If the gimbal hasn't been calibrated yet, the failing samples make the
+bias obvious — that's a good cue to run `{"cmd":"calibrate_yaw"}`.
+
 **Configuration** (`turret.yaml`):
 ```yaml
 device:
