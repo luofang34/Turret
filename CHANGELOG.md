@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Bounded `StateManager` per-source tracking maps** — `last_command_at`
+  and `last_rate_at` are now bounded on every write by a two-pass
+  eviction: a 5-minute TTL sweep (normal-path cleanup) followed by a
+  256-entry hard cap that drops the oldest entry when full
+  (burst-path safety net). Without this, a long-running daemon
+  serving transient IPC clients (each connection gets a fresh
+  `ControlSource::UnixSocket(u32)`) accumulated one entry per client
+  lifetime — bounded only by `u32::MAX`. The TTL alone wouldn't
+  protect against a fast burst (10 k connect/disconnect inside the
+  TTL window all look "fresh"); the cap closes that gap. 256 matches
+  MAVLink's `u8` sysid space, so a real MAVLink source is never
+  evicted under normal load. Evicting an active source has minor
+  cost: one rate-limit hit skipped on `last_command_at`, one rate
+  tick under-shot via the 10 ms `MIN_DT` fallback on `last_rate_at`
+  — neither is safety-critical. Tests cover the helper directly,
+  the end-to-end eviction path on both maps, and a burst-stress
+  case that asserts the cap holds. Also splits the inline test
+  module into `state/tests.rs` to keep `state.rs` under the
+  500-line module ceiling.
+
 ### Added
 - **Earth-frame yaw + `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE` ingestion** —
   the manager now consumes vehicle attitude from the autopilot and
