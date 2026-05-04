@@ -49,6 +49,13 @@ pub(super) fn message_id_from_param(p: f32) -> Option<u32> {
 /// Build a `GIMBAL_MANAGER_STATUS` frame from the current state. Used both
 /// by the 5 Hz publish loop and the on-demand `MAV_CMD_REQUEST_MESSAGE`
 /// responder, so periodic and on-demand frames stay byte-identical.
+///
+/// `flags` advertises `YAW_IN_VEHICLE_FRAME` to mirror what
+/// `GIMBAL_DEVICE_ATTITUDE_STATUS` actually publishes. `GimbalManagerFlags::default()`
+/// is *not* used here — rust-mavlink generates the default as the first
+/// bitflag variant, which happens to be `RETRACT`. Letting that leak out
+/// would make every `GIMBAL_MANAGER_STATUS` frame falsely advertise the
+/// gimbal as retracted to any GCS / autopilot reading the bus.
 pub(super) fn build_gimbal_manager_status_data(
     state_manager: &StateManager,
     config: &MavlinkConfig,
@@ -57,7 +64,7 @@ pub(super) fn build_gimbal_manager_status_data(
     let pc = state_manager.get_primary_control();
     GIMBAL_MANAGER_STATUS_DATA {
         time_boot_ms: start_time.elapsed().as_millis() as u32,
-        flags: GimbalManagerFlags::default(),
+        flags: GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_VEHICLE_FRAME,
         gimbal_device_id: config.compid,
         primary_control_sysid: pc.primary_sysid,
         primary_control_compid: pc.primary_compid,
@@ -282,6 +289,39 @@ mod tests {
         // broadcast entirely (see attitude_loop), not by setting flags
         // on a stale frame.
         assert!(data.failure_flags.is_empty());
+    }
+
+    #[test]
+    fn build_manager_status_does_not_advertise_retract() {
+        // Regression: `GimbalManagerFlags::default()` is rust-mavlink's
+        // first-bitflag default, which is `GIMBAL_MANAGER_FLAGS_RETRACT`.
+        // Letting it leak out makes every periodic / on-demand status
+        // frame falsely tell GCSs that the gimbal is retracted.
+        let cfg = MavlinkConfig {
+            enabled: true,
+            transport: Default::default(),
+            bind_addr: "0.0.0.0".parse().unwrap(),
+            udp_port: 14550,
+            sysid: 1,
+            compid: 154,
+            limits: Default::default(),
+        };
+        let state = StateManager::new();
+        let data = build_gimbal_manager_status_data(&state, &cfg, Instant::now());
+
+        assert!(
+            !data
+                .flags
+                .contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_RETRACT),
+            "flags must not advertise RETRACT (got {:?})",
+            data.flags
+        );
+        assert!(
+            data.flags
+                .contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_VEHICLE_FRAME),
+            "flags should mirror GIMBAL_DEVICE_ATTITUDE_STATUS frame (got {:?})",
+            data.flags
+        );
     }
 
     #[test]
