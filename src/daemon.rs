@@ -74,6 +74,8 @@
 
 #[path = "daemon/arbitrator.rs"]
 pub mod arbitrator;
+#[path = "daemon/calibration.rs"]
+pub mod calibration;
 #[path = "daemon/config.rs"]
 pub mod config;
 #[path = "daemon/gimbal_handle.rs"]
@@ -89,6 +91,7 @@ pub mod state;
 
 use crate::device_scanner::DeviceScanner;
 use crate::gimbal;
+use calibration::Calibration;
 use config::DaemonConfig;
 use gimbal_handle::GimbalHandle;
 use ipc_server::IpcServer;
@@ -159,12 +162,20 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         state_manager.update_firmware_version(version);
     }
 
+    // Load any persisted yaw zero-offset from the XDG state file. Missing
+    // file or any I/O error falls back to zero (logged at warn for visibility);
+    // first run on a fresh machine should always start with a clean slate
+    // rather than failing to boot.
+    let cal = Calibration::load();
+
     // Wrap gimbal in a GimbalHandle so every consumer (IPC, MAVLink,
     // attitude poll, reconnect) shares one underlying device through
     // an Arc<parking_lot::Mutex<...>>, with all I/O routed through
     // `tokio::task::spawn_blocking` so the runtime worker isn't blocked
-    // by the storm32 driver's `std::thread::sleep` between bytes.
-    let gimbal_shared = GimbalHandle::new(gimbal);
+    // by the storm32 driver's `std::thread::sleep` between bytes. The
+    // handle also owns the yaw-offset calibration so set_attitude /
+    // get_attitude stay in operator frame for every consumer.
+    let gimbal_shared = GimbalHandle::with_yaw_offset_deg(gimbal, cal.yaw_offset_deg);
 
     // The MAVLink attitude poll loop pings this when it counts too many
     // consecutive read failures; the reconnect task takes over from there.

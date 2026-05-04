@@ -7,6 +7,7 @@ mod slot;
 
 use self::slot::{SlotGuard, SlotPool, MAX_IPC_SLOTS};
 use super::arbitrator::{Arbitrator, Outcome};
+use super::calibration::Calibration;
 use super::config::IpcConfig;
 use super::gimbal_handle::GimbalHandle;
 use super::models::{CommandMode, ControlSource, GimbalCommand, IpcCommand, IpcResponse, PanMode};
@@ -197,6 +198,7 @@ impl IpcServer {
                     "pan_mode": state.pan_mode.to_name(),
                     "standby": state.standby,
                     "firmware_version": state.firmware_version,
+                    "yaw_offset_deg": gimbal.yaw_offset_deg(),
                 });
                 IpcResponse::ok_with_data(data)
             }
@@ -231,6 +233,10 @@ impl IpcServer {
                 Err(e) => IpcResponse::error(format!("Failed to set standby: {}", e)),
             },
 
+            IpcCommand::CalibrateYaw => calibrate_yaw(gimbal).await,
+
+            IpcCommand::SetYawOffset { deg } => set_yaw_offset(gimbal, deg),
+
             IpcCommand::Help => {
                 let help_text = serde_json::json!({
                     "commands": [
@@ -240,6 +246,8 @@ impl IpcServer {
                         {"cmd": "version"},
                         {"cmd": "pan_mode", "params": {"mode": "u8"}},
                         {"cmd": "standby", "params": {"enabled": "bool"}},
+                        {"cmd": "calibrate_yaw"},
+                        {"cmd": "set_yaw_offset", "params": {"deg": "f32"}},
                         {"cmd": "help"},
                     ]
                 });
@@ -247,6 +255,136 @@ impl IpcServer {
             }
         }
     }
+}
+
+/// How long to wait for the gimbal to settle on a commanded angle before
+/// sampling its IMU. The storm32's yaw motor traverses ~360°/s; the
+/// largest offset we'd ever calibrate against is the gimbal's mechanical
+/// yaw range, so 1.5 s gives ample margin even from a worst-case
+/// starting pose.
+const CALIBRATION_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Auto-calibrate the yaw zero-offset.
+///
+/// 1. Snapshot the existing offset so we can restore it on any failure.
+/// 2. Zero the offset so the device sees raw operator-frame commands.
+/// 3. Command `(0, 0, 0)` and wait for the gimbal to settle.
+/// 4. Read the device's raw yaw — that *is* the bias between the
+///    command frame and the IMU frame.
+/// 5. Store the bias as the new offset and persist it.
+///
+/// Bypasses the arbitrator: calibration is a one-shot operator action,
+/// not a streaming source competing with MAVLink. Skipping arbitration
+/// also avoids the case where a higher-priority source is mid-stream
+/// and would reject the calibration probe.
+async fn calibrate_yaw(gimbal: &GimbalHandle) -> IpcResponse {
+    let prior_offset = gimbal.yaw_offset_deg();
+
+    // Step 1: zero the offset so the next command goes through unmodified.
+    gimbal.set_yaw_offset_deg(0.0);
+
+    // Step 2: command center. On failure, restore the prior offset and
+    // bail — leaving offset=0 would silently change the operator's
+    // calibration.
+    if let Err(e) = gimbal.set_attitude(0.0, 0.0, 0.0).await {
+        gimbal.set_yaw_offset_deg(prior_offset);
+        return IpcResponse::error(format!("Calibration failed sending center command: {}", e));
+    }
+
+    // Step 3: settle.
+    tokio::time::sleep(CALIBRATION_SETTLE).await;
+
+    // Step 4: read raw IMU yaw. `get_attitude_raw` skips the offset
+    // application so the value we get back is in device frame —
+    // exactly the bias.
+    let raw = match gimbal.get_attitude_raw().await {
+        Ok(att) => att,
+        Err(e) => {
+            gimbal.set_yaw_offset_deg(prior_offset);
+            return IpcResponse::error(format!("Calibration failed reading attitude: {}", e));
+        }
+    };
+
+    if !raw.yaw.is_finite() {
+        gimbal.set_yaw_offset_deg(prior_offset);
+        return IpcResponse::error(format!(
+            "Calibration read non-finite yaw: {} — leaving prior offset {:.3}° intact",
+            raw.yaw, prior_offset
+        ));
+    }
+
+    let new_offset = raw.yaw;
+    gimbal.set_yaw_offset_deg(new_offset);
+
+    // Step 5: persist. Persistence failure is non-fatal — the offset is
+    // applied in memory so the operator sees the corrected behavior
+    // immediately; we just warn that they'll need to recalibrate after a
+    // daemon restart.
+    let mut persistence_warning = None;
+    if let Err(e) = (Calibration {
+        yaw_offset_deg: new_offset,
+    })
+    .save()
+    {
+        warn!(
+            "Calibration succeeded in-memory but failed to persist: {} \
+             — offset will be lost on daemon restart",
+            e
+        );
+        persistence_warning = Some(format!(
+            "calibration applied in memory but persistence failed: {} \
+             (will not survive daemon restart)",
+            e
+        ));
+    }
+
+    info!(
+        "Yaw calibration: prior_offset={:.3}° → new_offset={:.3}° (raw IMU yaw at SP=0)",
+        prior_offset, new_offset
+    );
+
+    let mut data = serde_json::json!({
+        "yaw_offset_deg": new_offset,
+        "prior_yaw_offset_deg": prior_offset,
+    });
+    if let Some(w) = persistence_warning {
+        data["warning"] = serde_json::Value::String(w);
+    }
+    IpcResponse::ok_with_data(data)
+}
+
+/// Set the yaw zero-offset to a caller-supplied value.
+fn set_yaw_offset(gimbal: &GimbalHandle, deg: f32) -> IpcResponse {
+    if !deg.is_finite() {
+        return IpcResponse::error(format!("yaw offset must be finite (got {deg})"));
+    }
+    gimbal.set_yaw_offset_deg(deg);
+
+    let mut persistence_warning = None;
+    if let Err(e) = (Calibration {
+        yaw_offset_deg: deg,
+    })
+    .save()
+    {
+        warn!(
+            "set_yaw_offset succeeded in-memory but failed to persist: {} \
+             — offset will be lost on daemon restart",
+            e
+        );
+        persistence_warning = Some(format!(
+            "offset applied in memory but persistence failed: {} \
+             (will not survive daemon restart)",
+            e
+        ));
+    }
+
+    info!("Yaw offset set explicitly: {:.3}°", deg);
+
+    let mut data = serde_json::json!({ "yaw_offset_deg": deg });
+    if let Some(w) = persistence_warning {
+        data["warning"] = serde_json::Value::String(w);
+    }
+    IpcResponse::ok_with_data(data)
 }
 
 /// Common tail for `Set` / `Center`: arbitrate, then call the gimbal
