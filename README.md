@@ -68,10 +68,18 @@ turret --daemon --config turret.yaml
 echo '{"cmd": "status"}' | nc -U /tmp/turret.sock
 echo '{"cmd": "set", "pitch": 10.0, "roll": 0.0, "yaw": -15.0}' | nc -U /tmp/turret.sock
 echo '{"cmd": "center"}' | nc -U /tmp/turret.sock
+echo '{"cmd": "pan_mode", "mode": 3}' | nc -U /tmp/turret.sock
+echo '{"cmd": "standby", "enabled": true}' | nc -U /tmp/turret.sock
+echo '{"cmd": "help"}' | nc -U /tmp/turret.sock     # full schema
 
 # MAVLink on UDP:14550 - use pymavlink or QGroundControl
 # Implements Gimbal Manager protocol
 ```
+
+The IPC wire format uses `snake_case` for both the `cmd` discriminator
+and field names — matches the response shape (`firmware_version`,
+`pan_mode`, ...) and standard JSON conventions. Send `{"cmd":"help"}`
+for the full machine-readable schema.
 
 **Configuration** (`turret.yaml`):
 ```yaml

@@ -223,9 +223,9 @@ impl IpcServer {
                 }
             }
 
-            IpcCommand::Standby { enable } => match gimbal.set_standby(enable).await {
+            IpcCommand::Standby { enabled } => match gimbal.set_standby(enabled).await {
                 Ok(_) => {
-                    state_manager.update_standby(enable);
+                    state_manager.update_standby(enabled);
                     IpcResponse::ok()
                 }
                 Err(e) => IpcResponse::error(format!("Failed to set standby: {}", e)),
@@ -238,8 +238,8 @@ impl IpcServer {
                         {"cmd": "center"},
                         {"cmd": "status"},
                         {"cmd": "version"},
-                        {"cmd": "pan-mode", "params": {"mode": "u8"}},
-                        {"cmd": "standby", "params": {"enable": "bool"}},
+                        {"cmd": "pan_mode", "params": {"mode": "u8"}},
+                        {"cmd": "standby", "params": {"enabled": "bool"}},
                         {"cmd": "help"},
                     ]
                 });
