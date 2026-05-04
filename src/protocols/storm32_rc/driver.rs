@@ -12,8 +12,8 @@ use super::frame::{RCMessage, RC_START_SIGN_OUT};
 use serialport::SerialPort;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::Duration;
-use tracing::{debug, trace};
+use std::time::{Duration, Instant};
+use tracing::{debug, trace, warn};
 
 /// Gimbal attitude reported by the STorM32 driver (Euler angles in degrees).
 #[derive(Debug, Clone, Copy)]
@@ -113,6 +113,17 @@ impl Storm32Gimbal {
     /// command wrapper in `commands.rs` funnels through here so the
     /// "drop stale input → write → wait → read with garbage-byte recovery"
     /// pattern lives in exactly one place.
+    ///
+    /// Read termination is *length-aware*. The previous "wait for ≥4 bytes,
+    /// then bail" rule worked for SET-style commands (single-byte ACK or
+    /// short replies) but truncated longer responses — `CMD_GETDATAFIELDS`
+    /// IMU1ANGLES is 13 bytes, `CMD_GETVERSION` is 9, etc. The fix: as soon
+    /// as we have STX+LEN (2 bytes), the LEN byte tells us the exact frame
+    /// total (`5 + LEN`: STX + LEN + CMD + payload + CRC2), and we keep
+    /// reading until we either have the full frame, hit the per-call
+    /// deadline, or restart on garbage. The garbage-restart limit prevents
+    /// an unhinged feed (e.g. another protocol talking to the same port)
+    /// from spinning here forever.
     #[tracing::instrument(level = "trace", skip(self, message), fields(cmd = ?message.command))]
     pub(super) fn send_rc_command(&mut self, message: &RCMessage) -> Result<Vec<u8>> {
         // Drop any stale input bytes so a previous incomplete response can't
@@ -127,46 +138,74 @@ impl Storm32Gimbal {
         // Short delay while the gimbal processes the command.
         std::thread::sleep(Duration::from_millis(5));
 
-        let mut buffer = vec![0u8; 256];
-        let mut total_bytes = 0;
-        let max_attempts = 10;
-        let mut attempts = 0;
+        const READ_BUDGET: Duration = Duration::from_millis(200);
+        const MAX_GARBAGE_RESTARTS: u32 = 3;
+        const ACK_BYTE: u8 = 0x4A;
 
-        while attempts < max_attempts && total_bytes < 4 {
+        let deadline = Instant::now() + READ_BUDGET;
+        let mut buffer = [0u8; 256];
+        let mut total_bytes: usize = 0;
+        let mut garbage_restarts: u32 = 0;
+
+        loop {
+            if Instant::now() >= deadline {
+                break;
+            }
             match self.port.read(&mut buffer[total_bytes..]) {
+                Ok(0) => continue,
                 Ok(bytes_read) => {
-                    if bytes_read > 0 {
-                        total_bytes += bytes_read;
+                    total_bytes += bytes_read;
 
-                        // First byte must be RC_START_SIGN_OUT (0xFB) or the
-                        // 0x4A single-byte ACK — anything else is garbage
-                        // from a previous exchange and we restart.
-                        if total_bytes > 0 && buffer[0] != RC_START_SIGN_OUT && buffer[0] != 0x4A {
-                            debug!(
-                                "Received garbage data (wrong start byte 0x{:02X}), flushing buffer",
-                                buffer[0]
-                            );
-                            self.port.clear(serialport::ClearBuffer::Input)?;
-                            total_bytes = 0;
-                            attempts += 1;
-                            std::thread::sleep(Duration::from_millis(10));
-                            continue;
+                    // First byte must be RC_START_SIGN_OUT (0xFB) or the
+                    // single-byte ACK (0x4A) — anything else is garbage
+                    // from a previous exchange and we restart.
+                    if buffer[0] != RC_START_SIGN_OUT && buffer[0] != ACK_BYTE {
+                        if garbage_restarts >= MAX_GARBAGE_RESTARTS {
+                            return Err(Storm32Error::ProtocolError(format!(
+                                "Garbage on serial line (start byte 0x{:02X}); \
+                                 gave up after {} restart attempts",
+                                buffer[0], MAX_GARBAGE_RESTARTS
+                            )));
                         }
+                        debug!(
+                            "Garbage start byte 0x{:02X}, restart {}/{}",
+                            buffer[0],
+                            garbage_restarts + 1,
+                            MAX_GARBAGE_RESTARTS
+                        );
+                        garbage_restarts += 1;
+                        self.port.clear(serialport::ClearBuffer::Input)?;
+                        total_bytes = 0;
+                        continue;
+                    }
 
-                        if total_bytes >= 4 || (total_bytes == 1 && buffer[0] == 0x4A) {
-                            break;
-                        }
-                    } else if total_bytes > 0 {
+                    // Single-byte ACK is complete the moment we have it.
+                    if buffer[0] == ACK_BYTE {
                         break;
                     }
-                    attempts += 1;
-                    std::thread::sleep(Duration::from_millis(10));
+
+                    // Need at least STX + LEN to know the expected total.
+                    if total_bytes < 2 {
+                        continue;
+                    }
+                    let expected_total = 5 + buffer[1] as usize;
+                    if expected_total > buffer.len() {
+                        return Err(Storm32Error::ProtocolError(format!(
+                            "LEN byte {} would overrun read buffer ({} bytes)",
+                            buffer[1],
+                            buffer.len()
+                        )));
+                    }
+                    if total_bytes >= expected_total {
+                        break;
+                    }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                    if total_bytes > 0 {
-                        break;
-                    }
-                    attempts += 1;
+                    // Per-read timeout; keep looping until the overall
+                    // deadline trips. Most calls never hit this — the
+                    // gimbal answers in milliseconds — but a flaky link
+                    // can leave us waiting through the configured
+                    // serialport timeout (1 s) on each iteration.
                     continue;
                 }
                 Err(e) => return Err(Storm32Error::IoError(e)),
@@ -177,6 +216,15 @@ impl Storm32Gimbal {
             return Err(Storm32Error::ProtocolError(
                 "No response received".to_string(),
             ));
+        }
+        if buffer[0] == RC_START_SIGN_OUT && total_bytes >= 2 {
+            let expected_total = 5 + buffer[1] as usize;
+            if total_bytes < expected_total {
+                warn!(
+                    "Read deadline expired with partial frame: got {} bytes, expected {}",
+                    total_bytes, expected_total
+                );
+            }
         }
 
         trace!("Received RC response: {:02X?}", &buffer[..total_bytes]);
