@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Bounded IPC client ID space via slot allocator** — IPC client IDs
+  now come from a fixed `0..64` slot pool (previously a monotonic
+  `u32` counter). Each accepted connection claims one slot via an
+  RAII `SlotGuard`; the guard releases the slot and clears the
+  client's per-source tracking entries from `StateManager` on drop.
+  Connections beyond the pool's capacity are rejected with a warn.
+  This bounds the `ControlSource::UnixSocket(u32)` keyspace at the
+  source — combined with MAVLink's `u8` sysid space and the single
+  `Cli` variant, the entire `ControlSource` set is now ≤ 321 values
+  forever, regardless of daemon uptime or IPC churn rate. Slot
+  cleanup ensures a client claiming a recycled slot index isn't
+  penalized by the previous tenant's rate-limit timestamp. Also
+  fixes a latent overflow bug: the old counter used `*id += 1`
+  instead of `wrapping_add(1)`, panicking in debug builds after
+  `u32::MAX` connections.
 - **Bounded `StateManager` per-source tracking maps** — `last_command_at`
   and `last_rate_at` are now bounded on every write by a two-pass
   eviction: a 5-minute TTL sweep (normal-path cleanup) followed by a

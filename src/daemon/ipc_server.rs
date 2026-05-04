@@ -2,6 +2,10 @@
 //! ([`super::models::IpcCommand`] / [`super::models::IpcResponse`]) and
 //! routes through the same priority arbitrator as the MAVLink handlers.
 
+#[path = "ipc_server/slot.rs"]
+mod slot;
+
+use self::slot::{SlotGuard, SlotPool, MAX_IPC_SLOTS};
 use super::arbitrator::{Arbitrator, Outcome};
 use super::config::IpcConfig;
 use super::gimbal_handle::GimbalHandle;
@@ -10,8 +14,7 @@ use super::state::StateManager;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Unix socket IPC server for local clients
 pub struct IpcServer {
@@ -19,7 +22,7 @@ pub struct IpcServer {
     state_manager: StateManager,
     arbitrator: Arc<Arbitrator>,
     gimbal: GimbalHandle,
-    next_client_id: Arc<Mutex<u32>>,
+    slots: SlotPool,
 }
 
 impl IpcServer {
@@ -29,13 +32,14 @@ impl IpcServer {
     /// stay coherent across clients.
     pub fn new(config: IpcConfig, state_manager: StateManager, gimbal: GimbalHandle) -> Self {
         let arbitrator = Arc::new(Arbitrator::new(state_manager.clone()));
+        let slots = SlotPool::new(state_manager.clone());
 
         Self {
             config,
             state_manager,
             arbitrator,
             gimbal,
-            next_client_id: Arc::new(Mutex::new(1)),
+            slots,
         }
     }
 
@@ -53,12 +57,18 @@ impl IpcServer {
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
-                    let client_id = {
-                        let mut id = self.next_client_id.lock().await;
-                        let current = *id;
-                        *id += 1;
-                        current
+                    let Some(slot_guard) = self.slots.acquire() else {
+                        warn!(
+                            "IPC server at capacity ({} clients); rejecting new connection",
+                            MAX_IPC_SLOTS
+                        );
+                        // Dropping `stream` closes the socket; client sees
+                        // an immediate disconnect rather than a half-open
+                        // pipe. No bookkeeping to undo since acquire failed.
+                        drop(stream);
+                        continue;
                     };
+                    let client_id = slot_guard.id();
 
                     info!("New IPC client connected: ID {}", client_id);
 
@@ -68,7 +78,7 @@ impl IpcServer {
 
                     tokio::spawn(async move {
                         if let Err(e) = Self::handle_client(
-                            client_id,
+                            slot_guard,
                             stream,
                             state_manager,
                             arbitrator,
@@ -79,6 +89,8 @@ impl IpcServer {
                             error!("Client {} error: {}", client_id, e);
                         }
                         info!("Client {} disconnected", client_id);
+                        // `slot_guard` drops here, releasing the slot and
+                        // clearing the client's per-source tracking entries.
                     });
                 }
                 Err(e) => {
@@ -90,12 +102,13 @@ impl IpcServer {
 
     /// Handle a single client connection
     async fn handle_client(
-        client_id: u32,
+        slot_guard: SlotGuard,
         stream: UnixStream,
         state_manager: StateManager,
         arbitrator: Arc<Arbitrator>,
         gimbal: GimbalHandle,
     ) -> crate::error::Result<()> {
+        let client_id = slot_guard.id();
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         let mut line = String::new();

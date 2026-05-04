@@ -260,6 +260,16 @@ impl StateManager {
     pub fn is_primary_allowed(&self, sysid: u8, compid: u8) -> bool {
         self.get_primary_control().is_allowed(sysid, compid)
     }
+
+    /// Drop the per-source tracking entries for `source`. Called by the
+    /// IPC server's slot allocator on client disconnect so a future
+    /// client claiming the same slot index inherits a clean slate
+    /// instead of the previous tenant's rate-limit timestamp / rate-tick
+    /// `dt` baseline.
+    pub fn clear_source(&self, source: &ControlSource) {
+        self.last_command_at.write().remove(source);
+        self.last_rate_at.write().remove(source);
+    }
 }
 
 /// Bound the per-source map's size before an insert. Two passes:
