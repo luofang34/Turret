@@ -22,6 +22,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # Belt-and-suspenders alongside the v1.0.4 pin on
+  # `rust-lang/crates-io-auth-action`: forces every JavaScript-based action
+  # in this workflow to use the node24 runtime instead of the deprecated
+  # node20 default. Drop once GitHub-hosted runners default to node24.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   publish:
     name: >-
@@ -47,10 +54,29 @@ jobs:
       # `serialport` pulls in `libudev-sys`, whose build script needs
       # pkg-config + libudev headers. Without this, `cargo package`'s
       # verification rebuild fails on the hosted Ubuntu runner.
+      #
+      # Wrap apt in the same 5-attempt retry as `ci.yml` because the
+      # GitHub-Actions Ubuntu runners periodically can't reach
+      # `azure.archive.ubuntu.com` (DNS / mirror outages lasting tens of
+      # minutes). A failed publish attempt due to a transient mirror
+      # outage is especially annoying — there's no easy "retry CI"
+      # button on a tag push.
       - name: Install libudev
         run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libudev-dev
+          set +e
+          for attempt in 1 2 3 4 5; do
+            sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev
+            result=$?
+            if [ $result -eq 0 ]; then
+              echo "apt install succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            sleep_for=$((attempt * 60))
+            echo "apt install failed on attempt ${attempt} (exit ${result}); sleeping ${sleep_for}s"
+            sleep ${sleep_for}
+          done
+          echo "apt install failed after 5 attempts — Azure mirror likely down for an extended outage"
+          exit 1
 
       # Fail fast if someone pushed a v1.2.3 tag that doesn't match the
       # version in Cargo.toml — cargo publish would reject it anyway, but
