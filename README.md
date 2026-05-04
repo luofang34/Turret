@@ -81,6 +81,35 @@ and field names — matches the response shape (`firmware_version`,
 `pan_mode`, ...) and standard JSON conventions. Send `{"cmd":"help"}`
 for the full machine-readable schema.
 
+### Yaw calibration
+
+If your gimbal's IMU yaw reading is biased relative to its commanded
+zero (typical symptom: `set yaw=0` then `status` returns yaw≠0 by a
+fixed amount), calibrate from the daemon — no GUI required:
+
+```bash
+# Auto-calibrate: daemon centers the gimbal, samples raw IMU yaw,
+# stores the bias as the new offset.
+echo '{"cmd": "calibrate_yaw"}' | nc -U /tmp/turret.sock
+# → {"status":"ok","data":{"yaw_offset_deg": -4.48, "prior_yaw_offset_deg": 0.0}}
+
+# Or set an explicit value (e.g. from a measurement you took elsewhere):
+echo '{"cmd": "set_yaw_offset", "deg": -4.5}' | nc -U /tmp/turret.sock
+
+# 0.0 disables the offset:
+echo '{"cmd": "set_yaw_offset", "deg": 0.0}' | nc -U /tmp/turret.sock
+```
+
+The offset persists to `$XDG_STATE_HOME/turret/calibration.toml` (default
+`~/.local/state/turret/calibration.toml`) and is auto-loaded on daemon
+start. The current offset is included in every `status` response as
+`"yaw_offset_deg"`.
+
+Read-side correction model: commands hit the device exactly as you wrote
+them (the gimbal physically goes to the asked-for angle), and the
+calibration offset is subtracted from the IMU's report before it reaches
+any consumer (IPC `status`, MAVLink `GIMBAL_DEVICE_ATTITUDE_STATUS`).
+
 **Configuration** (`turret.yaml`):
 ```yaml
 device:

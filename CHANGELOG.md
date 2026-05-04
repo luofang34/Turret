@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Yaw zero-offset calibration (no GUI required).** The daemon now owns a
+  yaw bias compensation between the operator-facing command frame and the
+  IMU-reported readback frame. Two new IPC commands:
+    - `{"cmd":"calibrate_yaw"}` — auto: temporarily zeroes the offset,
+      commands `(0, 0, 0)`, waits 1.5 s for the gimbal to settle, samples
+      the raw IMU yaw, stores that as the new offset, persists, returns
+      `{"yaw_offset_deg": <new>}`.
+    - `{"cmd":"set_yaw_offset","deg":<f32>}` — manual override, same
+      persistence path.
+  Status response gains `"yaw_offset_deg"`. State persists to
+  `$XDG_STATE_HOME/turret/calibration.toml` (default
+  `~/.local/state/turret/`), loaded on daemon start; missing / malformed
+  file silently uses zero-offset defaults so first run still boots cleanly.
+  Read-side correction model: `set_attitude` passes operator commands
+  through to the device unchanged, `get_attitude` subtracts the offset
+  from the IMU's reading. After calibration, an operator commanding
+  yaw=N gets a status read of yaw≈N (within IMU noise), and the
+  physical gimbal lands exactly where the operator asked. Hardware-
+  verified on STorM32 fw 0.96: pre-cal `SP=0 → PV=-4.7°`, post-cal
+  `SP={0, 10, -15} → PV={0.07, 10.06, -14.92}`. Calibration survives
+  daemon restart via the persisted state file.
+
 ### Changed (BREAKING — IPC wire format)
 - **IPC schema is now uniformly `snake_case`** — both the `cmd`
   discriminator and field names. Specifically:

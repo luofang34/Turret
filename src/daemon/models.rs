@@ -288,6 +288,21 @@ pub enum IpcCommand {
         /// New standby state.
         enabled: bool,
     },
+    /// Auto-calibrate the yaw zero-offset. The daemon temporarily zeroes
+    /// the offset, commands `(0, 0, 0)`, waits for the gimbal to settle,
+    /// samples the raw IMU yaw, and stores that value as the new offset.
+    /// Subsequent operator-frame yaw=0 commands then round-trip to a
+    /// status read of yaw≈0 (within IMU noise). Persists the new offset
+    /// to `$XDG_STATE_HOME/turret/calibration.toml`. Response data:
+    /// `{"yaw_offset_deg": <new>}`.
+    CalibrateYaw,
+    /// Set the yaw zero-offset to an explicit value (operator-frame
+    /// degrees). Persists to disk like `calibrate_yaw`. `0.0` disables
+    /// the offset.
+    SetYawOffset {
+        /// New yaw offset, operator-frame degrees.
+        deg: f32,
+    },
     /// Return a JSON description of all available commands.
     Help,
 }
@@ -417,5 +432,32 @@ mod tests {
             s.contains(r#""enabled":false"#),
             "expected `enabled`, got {s}"
         );
+    }
+
+    #[test]
+    fn deserialize_calibrate_yaw() {
+        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd":"calibrate_yaw"}"#).unwrap();
+        assert!(matches!(cmd, IpcCommand::CalibrateYaw));
+    }
+
+    #[test]
+    fn deserialize_set_yaw_offset() {
+        let cmd: IpcCommand =
+            serde_json::from_str(r#"{"cmd":"set_yaw_offset","deg":-4.5}"#).unwrap();
+        match cmd {
+            IpcCommand::SetYawOffset { deg } => assert!((deg - -4.5).abs() < 1e-6),
+            other => panic!("expected SetYawOffset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serialize_set_yaw_offset_uses_snake_case() {
+        let cmd = IpcCommand::SetYawOffset { deg: 1.25 };
+        let s = serde_json::to_string(&cmd).unwrap();
+        assert!(
+            s.contains(r#""cmd":"set_yaw_offset""#),
+            "expected snake_case discriminator, got {s}"
+        );
+        assert!(s.contains(r#""deg":1.25"#), "got {s}");
     }
 }
