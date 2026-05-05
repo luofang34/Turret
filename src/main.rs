@@ -97,7 +97,14 @@ fn parse_standby(value: &str) -> Result<bool> {
     }
 }
 
-#[tokio::main]
+// Single-threaded tokio runtime. The daemon's actual concurrency need
+// is tiny — IPC accept loop, MAVLink RX, three broadcast loops, attitude
+// poll, reconnect supervisor — all I/O-bound. Multi-thread costs ~3 MB
+// RSS in per-thread arenas + worker stacks for no measurable throughput
+// win on this workload. Sync serial I/O still goes through
+// `tokio::task::spawn_blocking` (see `daemon::gimbal_handle`), which on
+// `current_thread` runs on the same dedicated blocking pool.
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let matches = Command::new("turret")
         .version(env!("CARGO_PKG_VERSION"))
