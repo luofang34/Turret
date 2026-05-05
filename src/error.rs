@@ -47,6 +47,20 @@ pub enum Error {
         tried: String,
     },
 
+    /// Serial device path exists but is held exclusively by another
+    /// process — typically a `turret --daemon` running on the same
+    /// machine. Distinct from [`Error::NotDetected`] so the caller can
+    /// surface the right hint ("stop the daemon" vs "no STorM32 found").
+    #[error(
+        "device {device} is held by another process \
+         (likely `turret --daemon`); send commands via the daemon's IPC \
+         socket, or stop the daemon first"
+    )]
+    DeviceBusy {
+        /// Device path that was busy.
+        device: String,
+    },
+
     /// The requested operation is not supported by the active protocol.
     #[error("operation not supported by {protocol}: {op}")]
     Unsupported {

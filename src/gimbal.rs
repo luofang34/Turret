@@ -70,15 +70,63 @@ pub trait GimbalDevice: Send {
 
 /// Detect and initialize a gimbal on `device_path`, trying each supported
 /// protocol in turn.
+///
+/// On failure, distinguishes "device path is held by another process"
+/// (typically a `turret --daemon` running locally — returns
+/// [`Error::DeviceBusy`]) from "no supported protocol responded"
+/// (returns [`Error::NotDetected`]). The two need different fixes from
+/// the operator, so collapsing them was the visible UX bug that drove
+/// this distinction.
 pub fn detect_gimbal(device_path: &str) -> Result<Box<dyn GimbalDevice>> {
     use crate::protocols::storm32_rc::Storm32RC;
 
-    if let Ok(gimbal) = Storm32RC::try_detect(device_path) {
-        return Ok(Box::new(gimbal));
+    match Storm32RC::try_detect(device_path) {
+        Ok(gimbal) => Ok(Box::new(gimbal)),
+        Err(e) => {
+            if is_resource_busy(&e) {
+                Err(Error::DeviceBusy {
+                    device: device_path.to_string(),
+                })
+            } else {
+                Err(Error::NotDetected {
+                    device: device_path.to_string(),
+                    tried: "STorM32 RC".to_string(),
+                })
+            }
+        }
     }
+}
 
-    Err(Error::NotDetected {
-        device: device_path.to_string(),
-        tried: "STorM32 RC".to_string(),
-    })
+/// Walk the error chain looking for an `io::Error` with kind
+/// [`std::io::ErrorKind::ResourceBusy`] — the EBUSY that
+/// `serialport-rs` raises when the device is held exclusively by
+/// another process. Used by [`detect_gimbal`] to surface
+/// [`Error::DeviceBusy`] instead of the generic
+/// [`Error::NotDetected`] in that specific case.
+fn is_resource_busy(err: &Error) -> bool {
+    // `dyn std::error::Error` source chain. The actual error is a few
+    // layers down: Error::Storm32(Storm32Error::SerialError(serialport::Error{ kind, .. }))
+    // → wraps io::Error in some versions of serialport. Walk until we
+    // find an io::Error and check its kind.
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+            if io_err.kind() == std::io::ErrorKind::ResourceBusy {
+                return true;
+            }
+        }
+        // serialport::Error has its own Kind enum that signals
+        // "InvalidInput" / "NoDevice" / "Unknown"; the EBUSY case
+        // surfaces as Unknown but with the wrapped io::Error
+        // distinguishable. Conservative belt-and-braces: also peek at
+        // the Display string for the common "Device or resource busy"
+        // text — `serialport-rs` includes it on Linux even when the
+        // ErrorKind has been remapped.
+        let display = e.to_string();
+        if display.contains("Device or resource busy") || display.contains("Resource busy") {
+            return true;
+        }
+        current = e.source();
+    }
+    false
 }

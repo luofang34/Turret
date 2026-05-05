@@ -19,8 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as `daemon::state::evict_for_insert` from PR #37 so the pattern is
   recognizable. Tests cover insert, refresh, TTL sweep, hard cap, and
   a 5×-cap burst that asserts post-burst size equals the cap.
+- **`detect_gimbal` no longer collapses EBUSY into `NotDetected`.** When
+  a `turret --daemon` was running and a user invoked `turret status`
+  (CLI direct-device mode), `serialport::open()` failed with EBUSY but
+  the error was lost — the user saw the misleading
+  `Error: NotDetected { device: "/dev/ttyACM0", tried: "STorM32 RC" }`,
+  which suggests "no STorM32 found" rather than "the device is busy."
+  New `Error::DeviceBusy { device }` variant; `detect_gimbal` walks the
+  error chain (`io::ErrorKind::ResourceBusy` + Display-string
+  fallback) and returns it instead. The Display message tells the
+  operator how to recover: send commands via the daemon's IPC socket,
+  or stop the daemon.
 
 ### Changed
+- **MSRV bumped to 1.83** — required for `std::io::ErrorKind::ResourceBusy`,
+  used by the EBUSY-aware `detect_gimbal` path. The earlier 1.74 floor
+  (driven by `Cargo.toml [lints]` tables) still applies.
 - **Lean tokio runtime: `current_thread` flavor + minimal feature set.**
   The daemon's actual concurrency need — IPC accept loop, MAVLink RX,
   three broadcast loops, attitude poll, reconnect supervisor — is
