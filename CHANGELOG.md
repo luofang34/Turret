@@ -40,6 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (horizon-lock pan, velocity-aware lead/lag, yaw-rate feed-forward on
   earth-frame rate commands) without re-touching the wire path.
 
+### Documentation
+- **README + `daemon` module docstring now spell out the
+  protocol-pluggability stance.** New "What this is" / "Operator
+  protocols are pluggable" / "Hardware protocols are pluggable too"
+  sections in README frame Turret as gimbal-manager / targeting
+  middleware: standards-compliant operator protocols (MAVLink GMv2
+  today; CCSDS / custom front-ends as peers tomorrow) bolted onto
+  cheap or non-standard gimbal controllers. The `daemon` module
+  docstring gets a matching "Architectural shape" preamble pointing
+  at `StateManager` / `Arbitrator` / `GimbalHandle` as the
+  protocol-agnostic core. No code change — the architecture already
+  matches; this just makes the design choice readable from the README
+  before someone proposes layering a new protocol against the wrong
+  abstraction.
+
 ### Fixed
 - **STorM32 read failures now surface to the daemon's poll loop.**
   `Storm32Gimbal::update_status` was catching every `send_rc_command`

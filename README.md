@@ -2,6 +2,42 @@
 
 Command-line tool for STorM32 gimbal controllers. Uses the RC Commands protocol.
 
+## What this is
+
+Turret is an embedded-Linux **gimbal manager / targeting middleware**:
+the standards-compliant front-end (MAVLink Gimbal Manager v2 today; the
+spec calls out multi-source arbitration, capability advertising, and a
+common command shape) bolted onto cheap or non-standard gimbal
+controllers (STorM32 RC over serial today). The daemon takes the
+operator-protocol side seriously — primary/secondary control ownership,
+ACK shapes, frame-flag conventions, rate→position integration, drift
+correction — so that every GCS, autopilot, or companion app on the
+network sees a normal MAVLink gimbal regardless of what's actually
+moving the motors.
+
+### Operator protocols are pluggable
+
+The daemon's core (`daemon::state::StateManager`, `daemon::arbitrator`,
+`daemon::gimbal_handle::GimbalHandle`) owns no MAVLink types. Protocol
+front-ends — `daemon::mavlink_manager` for MAVLink, `daemon::ipc_server`
+for the Unix socket — are peers that translate inbound frames to
+`GimbalCommand`, dispatch through the arbitrator, and translate outbound
+state back. Adding a new operator protocol (CCSDS, a custom mission-bus
+frame, gRPC) means writing a new module alongside `mavlink_manager`,
+not touching the arbitrator, state, or gimbal handle.
+
+Today only MAVLink (+ the local IPC) is implemented. That's a deliberate
+scope choice, not architectural lock-in: assume MAVLink is one of
+potentially-several front-ends, but ship one well before the second.
+
+### Hardware protocols are pluggable too
+
+The hardware side runs through the `gimbal::GimbalDevice` trait
+(`set_attitude`, `get_attitude`, `protocol_name`). Today's only
+implementation is STorM32 RC (`protocols::storm32_rc`); a different
+controller is a new `GimbalDevice` impl, no other module changes. The
+embedded-use docstring on `daemon` shows the minimum invocation.
+
 ## Features
 
 - **CLI Mode**: Direct command-line control

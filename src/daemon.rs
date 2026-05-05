@@ -1,6 +1,24 @@
 //! Long-running daemon: IPC server + MAVLink Gimbal Manager + hot-plug
 //! recovery glued onto a single gimbal handle.
 //!
+//! ## Architectural shape (read this first if you're adding a protocol)
+//!
+//! The core types in this module are protocol-agnostic on purpose:
+//!
+//! - [`state::StateManager`] tracks measured attitude, last-accepted
+//!   command, primary/secondary control ownership.
+//! - [`arbitrator::Arbitrator`] decides which inbound `GimbalCommand`
+//!   wins on priority + per-source rate limit.
+//! - [`gimbal_handle::GimbalHandle`] owns the device and routes calls
+//!   through `spawn_blocking`.
+//!
+//! None of those touch MAVLink types. The MAVLink front-end lives in
+//! [`mavlink_manager`] and is a peer to [`ipc_server`]; a future CCSDS
+//! or custom-bus front-end goes alongside, decoding its wire frames
+//! into `GimbalCommand` and dispatching through the arbitrator. Today
+//! MAVLink is the only network-side protocol implemented — by scope
+//! choice, not lock-in.
+//!
 //! Two consumption modes are supported:
 //!
 //! 1. **The `turret` binary** — `run_daemon(Some("turret.yaml".into()))`
