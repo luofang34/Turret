@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Lean tokio runtime: `current_thread` flavor + minimal feature set.**
+  The daemon's actual concurrency need — IPC accept loop, MAVLink RX,
+  three broadcast loops, attitude poll, reconnect supervisor — is
+  entirely I/O-bound and fits comfortably on one OS thread. Switched
+  `#[tokio::main]` to `flavor = "current_thread"` and replaced
+  `features = ["full"]` with the explicit set we use:
+  `["rt", "macros", "io-util", "net", "signal", "sync", "time"]`.
+  Sync serial I/O still goes through `tokio::task::spawn_blocking`
+  (via `daemon::gimbal_handle::GimbalHandle`), which on `current_thread`
+  uses the same dedicated blocking pool. Hardware-measured on Jetson
+  Orin (8-core): RSS dropped from 3,684 KB to 3,352 KB (-332 KB), thread
+  count from 8 to 2; burst test still settles flat at the new lower
+  baseline (no growth under 500 concurrent IPC connections); SP=7° →
+  PV=6.78° round-trip unchanged.
 - **Dependency refresh.** Latest patch / minor on every direct dep, plus
   three semver-major bumps that turned out to be drop-in:
     - `mavlink` 0.13 → 0.17 (4 versions; codegen output is API-compatible

@@ -58,7 +58,12 @@ clap = { version = "4.6", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 # Daemon-only.
-tokio = { version = "1.52", features = ["full"], optional = true }
+# `default-features = false` + the explicit feature set drops the
+# multi-thread runtime, fs, process, parking_lot integration and a
+# couple of other pieces we don't use. Keeps memory tight on small
+# boards: -396 KB RSS, -6 worker threads on Jetson Orin (8-core),
+# vs the `features = ["full"]` baseline.
+tokio = { version = "1.52", default-features = false, features = ["rt", "macros", "io-util", "net", "signal", "sync", "time"], optional = true }
 parking_lot = { version = "0.12", optional = true }
 serde_json = { version = "1.0", optional = true }
 serde_yaml_ng = { version = "0.10", optional = true }
