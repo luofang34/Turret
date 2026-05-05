@@ -14,7 +14,6 @@ use crate::daemon::mavlink_manager::handlers::build::{
     build_gimbal_manager_status_data, message_id_from_param, msg_id, send_command_ack,
     send_gimbal_manager_information, send_mavlink_message,
 };
-use crate::daemon::mavlink_manager::math::to_id_byte;
 use crate::daemon::mavlink_manager::RxCtx;
 use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
 use mavlink::ardupilotmega::{MavCmd, MavMessage, MavResult, COMMAND_LONG_DATA};
@@ -41,7 +40,7 @@ pub(super) async fn on_command_long(
             on_cmd_pitchyaw(sender_sysid, sender_compid, src_addr, cmd, ctx).await;
         }
         MavCmd::MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE => {
-            on_cmd_configure(src_addr, cmd, ctx).await;
+            on_cmd_configure(sender_sysid, sender_compid, src_addr, cmd, ctx).await;
         }
         MavCmd::MAV_CMD_REQUEST_MESSAGE => {
             on_cmd_request_message(src_addr, cmd, ctx).await;
@@ -188,17 +187,122 @@ async fn on_cmd_pitchyaw(
     .await;
 }
 
-async fn on_cmd_configure(src_addr: SocketAddr, cmd: COMMAND_LONG_DATA, ctx: &RxCtx<'_>) {
+/// Per-field special-value semantics from the MAVLink common.xml spec
+/// for `MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE`. Each of param1..param4
+/// is a `float` carrying a sysid or compid byte, with these special
+/// negative / zero values overlaid:
+///
+/// - `-1`: leave unchanged
+/// - `-2`: claim self (substitute the requesting message's sysid/compid)
+/// - `-3`: release if currently mine (only clears when the existing
+///   value matches the requesting sysid/compid; no-op otherwise)
+/// - `0`:  permanently release (anyone may claim afterward)
+/// - any other non-negative finite value: take as a literal byte
+///
+/// Today's `to_id_byte` clamped negatives to `0`, which would make
+/// every special value behave like "release" — including `-1` ("leave
+/// unchanged"), which would silently overwrite ownership on every
+/// configure call from a GCS that didn't realize it had to populate
+/// the unchanged fields too. Decoding into a typed enum makes the
+/// per-field policy explicit.
+#[derive(Debug, Clone, Copy)]
+enum ConfigureField {
+    /// `-1`: keep the current value.
+    NoChange,
+    /// `-2`: substitute the requesting sysid/compid.
+    ClaimSelf,
+    /// `-3`: clear if (and only if) the current value matches the
+    /// requesting sysid/compid. No-op otherwise.
+    ReleaseIfMine,
+    /// `0`: clear unconditionally.
+    ReleaseUnconditional,
+    /// Any other finite non-negative value, rounded to a byte.
+    Literal(u8),
+}
+
+impl ConfigureField {
+    fn decode(p: f32) -> Self {
+        if !p.is_finite() {
+            // NaN / inf: spec doesn't mention these. Treat as
+            // "leave unchanged" — the safest interpretation that
+            // doesn't accidentally release control on a malformed
+            // GCS frame.
+            return Self::NoChange;
+        }
+        // Negative special values are integer-coded in the spec.
+        // Use `.round()` so a -3.0 sent as float is robustly matched.
+        let r = p.round();
+        if (r - -1.0).abs() < 0.5 {
+            Self::NoChange
+        } else if (r - -2.0).abs() < 0.5 {
+            Self::ClaimSelf
+        } else if (r - -3.0).abs() < 0.5 {
+            Self::ReleaseIfMine
+        } else if r == 0.0 {
+            Self::ReleaseUnconditional
+        } else if r > 0.0 && r <= 255.0 {
+            Self::Literal(r as u8)
+        } else {
+            // Negative-but-not-special, or > 255: log and treat as
+            // unchanged. Better than the old behavior of silently
+            // collapsing -7.4 to 0 (= release).
+            warn!(
+                "MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE: out-of-range param {} \
+                 (expected -3, -2, -1, 0, or [1, 255]); leaving field unchanged",
+                p
+            );
+            Self::NoChange
+        }
+    }
+
+    fn apply(self, current: u8, requester: u8) -> u8 {
+        match self {
+            Self::NoChange => current,
+            Self::ClaimSelf => requester,
+            Self::ReleaseIfMine => {
+                if current == requester {
+                    0
+                } else {
+                    current
+                }
+            }
+            Self::ReleaseUnconditional => 0,
+            Self::Literal(b) => b,
+        }
+    }
+}
+
+async fn on_cmd_configure(
+    sender_sysid: u8,
+    sender_compid: u8,
+    src_addr: SocketAddr,
+    cmd: COMMAND_LONG_DATA,
+    ctx: &RxCtx<'_>,
+) {
+    let prev = ctx.state.get_primary_control();
     let pc = PrimaryControl {
-        primary_sysid: to_id_byte(cmd.param1),
-        primary_compid: to_id_byte(cmd.param2),
-        secondary_sysid: to_id_byte(cmd.param3),
-        secondary_compid: to_id_byte(cmd.param4),
+        primary_sysid: ConfigureField::decode(cmd.param1).apply(prev.primary_sysid, sender_sysid),
+        primary_compid: ConfigureField::decode(cmd.param2)
+            .apply(prev.primary_compid, sender_compid),
+        secondary_sysid: ConfigureField::decode(cmd.param3)
+            .apply(prev.secondary_sysid, sender_sysid),
+        secondary_compid: ConfigureField::decode(cmd.param4)
+            .apply(prev.secondary_compid, sender_compid),
     };
     ctx.state.set_primary_control(pc);
     info!(
-        "MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE → primary=({},{}), secondary=({},{})",
-        pc.primary_sysid, pc.primary_compid, pc.secondary_sysid, pc.secondary_compid,
+        "MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE from ({},{}): \
+         primary ({},{}) → ({},{}); secondary ({},{}) → ({},{})",
+        sender_sysid,
+        sender_compid,
+        prev.primary_sysid,
+        prev.primary_compid,
+        pc.primary_sysid,
+        pc.primary_compid,
+        prev.secondary_sysid,
+        prev.secondary_compid,
+        pc.secondary_sysid,
+        pc.secondary_compid,
     );
     send_command_ack(
         src_addr,
@@ -207,4 +311,134 @@ async fn on_cmd_configure(src_addr: SocketAddr, cmd: COMMAND_LONG_DATA, ctx: &Rx
         MavResult::MAV_RESULT_ACCEPTED,
     )
     .await;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    //! Unit tests for `ConfigureField` — the decode + per-field apply
+    //! logic that determines how `param1..param4` of CONFIGURE map onto
+    //! primary / secondary sysid+compid changes. The async wrapper
+    //! around it (`on_cmd_configure`) is harder to test in isolation
+    //! without a mock RxCtx; the math here is what actually decides the
+    //! ownership change.
+
+    use super::ConfigureField;
+
+    #[test]
+    fn decode_negative_one_is_no_change() {
+        assert!(matches!(
+            ConfigureField::decode(-1.0),
+            ConfigureField::NoChange
+        ));
+        // ±0.5 rounding tolerance — float -1.0 might arrive as -0.999.
+        assert!(matches!(
+            ConfigureField::decode(-0.999),
+            ConfigureField::NoChange
+        ));
+        assert!(matches!(
+            ConfigureField::decode(-1.001),
+            ConfigureField::NoChange
+        ));
+    }
+
+    #[test]
+    fn decode_negative_two_is_claim_self() {
+        assert!(matches!(
+            ConfigureField::decode(-2.0),
+            ConfigureField::ClaimSelf
+        ));
+    }
+
+    #[test]
+    fn decode_negative_three_is_release_if_mine() {
+        assert!(matches!(
+            ConfigureField::decode(-3.0),
+            ConfigureField::ReleaseIfMine
+        ));
+    }
+
+    #[test]
+    fn decode_zero_is_release_unconditional() {
+        assert!(matches!(
+            ConfigureField::decode(0.0),
+            ConfigureField::ReleaseUnconditional
+        ));
+    }
+
+    #[test]
+    fn decode_positive_byte_is_literal() {
+        assert!(matches!(
+            ConfigureField::decode(154.0),
+            ConfigureField::Literal(154)
+        ));
+        assert!(matches!(
+            ConfigureField::decode(1.0),
+            ConfigureField::Literal(1)
+        ));
+        assert!(matches!(
+            ConfigureField::decode(255.0),
+            ConfigureField::Literal(255)
+        ));
+    }
+
+    #[test]
+    fn decode_out_of_range_is_no_change() {
+        // Negative but not -1/-2/-3 — old code collapsed to 0
+        // (silent release); new code keeps the value unchanged and
+        // logs a warn.
+        assert!(matches!(
+            ConfigureField::decode(-7.0),
+            ConfigureField::NoChange
+        ));
+        assert!(matches!(
+            ConfigureField::decode(256.0),
+            ConfigureField::NoChange
+        ));
+    }
+
+    #[test]
+    fn decode_non_finite_is_no_change() {
+        assert!(matches!(
+            ConfigureField::decode(f32::NAN),
+            ConfigureField::NoChange
+        ));
+        assert!(matches!(
+            ConfigureField::decode(f32::INFINITY),
+            ConfigureField::NoChange
+        ));
+    }
+
+    #[test]
+    fn apply_no_change_preserves_current() {
+        assert_eq!(ConfigureField::NoChange.apply(42, 99), 42);
+    }
+
+    #[test]
+    fn apply_claim_self_substitutes_requester() {
+        // Even if a value was already set, `-2` always overwrites
+        // with the requester.
+        assert_eq!(ConfigureField::ClaimSelf.apply(42, 99), 99);
+        assert_eq!(ConfigureField::ClaimSelf.apply(0, 7), 7);
+    }
+
+    #[test]
+    fn apply_release_if_mine_only_clears_on_match() {
+        // `-3` clears only when the current owner matches the
+        // requester — prevents one client from bumping another off
+        // by impersonation.
+        assert_eq!(ConfigureField::ReleaseIfMine.apply(99, 99), 0);
+        assert_eq!(ConfigureField::ReleaseIfMine.apply(42, 99), 42);
+    }
+
+    #[test]
+    fn apply_release_unconditional_always_clears() {
+        assert_eq!(ConfigureField::ReleaseUnconditional.apply(42, 99), 0);
+        assert_eq!(ConfigureField::ReleaseUnconditional.apply(0, 99), 0);
+    }
+
+    #[test]
+    fn apply_literal_overwrites() {
+        assert_eq!(ConfigureField::Literal(154).apply(42, 99), 154);
+    }
 }
