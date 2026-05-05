@@ -26,7 +26,7 @@ pub enum Error {
     /// YAML configuration parse / serialization failure.
     #[cfg(feature = "daemon")]
     #[error("config: {0}")]
-    Config(#[from] serde_yaml::Error),
+    Config(#[from] serde_yaml_ng::Error),
 
     /// JSON serialization / parse failure (IPC wire format).
     #[cfg(feature = "daemon")]
