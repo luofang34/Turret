@@ -153,7 +153,7 @@ pub(super) async fn broadcast_to_peers(
     msg: MavMessage,
     label: &'static str,
 ) {
-    let targets: Vec<SocketAddr> = peers.lock().await.iter().copied().collect();
+    let targets: Vec<SocketAddr> = peers.lock().await.keys().copied().collect();
     if targets.is_empty() {
         return;
     }

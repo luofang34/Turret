@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **MAVLink peer map is now bounded.** `Peers` was an unbounded
+  `HashSet<SocketAddr>` — every unique inbound UDP source got added
+  forever. Under sustained traffic from many sources (ephemeral ports,
+  scanners, misconfigured clients) the map could grow without limit.
+  Replaced with `HashMap<SocketAddr, Instant>` and a new `record_peer`
+  helper that applies a TTL+hard-cap eviction on every insert: 60 s TTL
+  (peer silent for that long → dropped on next inbound packet) and a
+  256-entry hard cap (oldest evicted on overflow). Same eviction shape
+  as `daemon::state::evict_for_insert` from PR #37 so the pattern is
+  recognizable. Tests cover insert, refresh, TTL sweep, hard cap, and
+  a 5×-cap burst that asserts post-burst size equals the cap.
+
 ### Changed
 - **Lean tokio runtime: `current_thread` flavor + minimal feature set.**
   The daemon's actual concurrency need — IPC accept loop, MAVLink RX,
