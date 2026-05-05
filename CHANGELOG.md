@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Dependency refresh.** Latest patch / minor on every direct dep, plus
+  three semver-major bumps that turned out to be drop-in:
+    - `mavlink` 0.13 → 0.17 (4 versions; codegen output is API-compatible
+      with our usage — same `MavMessage`, `MavResult`, `MavCmd`,
+      `GimbalManagerFlags`, etc.)
+    - `toml` 0.8 → 1.1 (1.0 release; needs the `serde` feature flag now
+      to expose `from_str` / `to_string_pretty` at the crate root)
+    - `serialport` 4.5 → 4.9 (no API surface used by us changed)
+- **`serde_yaml` → `serde_yaml_ng`.** Upstream `serde_yaml` was archived
+  by the maintainer (its published version literally carries
+  `+deprecated` in the version string). `serde_yaml_ng` is the
+  community fork that picked up maintenance with the same API surface.
+  Three call sites (`error.rs`, `daemon/config.rs` × 2). Wire format
+  unchanged — existing `turret.yaml` files still parse identically.
+- Patch bumps via `cargo update`: `tokio` 1.42 → 1.52, `clap` 4.0 → 4.6,
+  plus transitive refresh.
+
 ## [0.1.2] - 2026-05-04
 
 ### Added

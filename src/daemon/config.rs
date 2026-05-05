@@ -171,13 +171,13 @@ impl DaemonConfig {
     /// Load configuration from YAML file
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> crate::error::Result<Self> {
         let contents = std::fs::read_to_string(path)?;
-        let config: DaemonConfig = serde_yaml::from_str(&contents)?;
+        let config: DaemonConfig = serde_yaml_ng::from_str(&contents)?;
         Ok(config)
     }
 
     /// Save configuration to YAML file
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> crate::error::Result<()> {
-        let contents = serde_yaml::to_string(self)?;
+        let contents = serde_yaml_ng::to_string(self)?;
         std::fs::write(path, contents)?;
         Ok(())
     }
