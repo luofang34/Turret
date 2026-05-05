@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`GIMBAL_MANAGER_SET_MANUAL_CONTROL` now honors the rate path and
+  earth-frame yaw flag.** The handler used to treat the message purely
+  as a position command (`pitch`/`yaw` × 90° → angle), discarding
+  `pitch_rate`/`yaw_rate` and ignoring `flags` entirely. Per the GMv2
+  spec, NaN on the angle fields means "use rate instead": when both
+  pitch & yaw angles are NaN, the normalized rate fields (`-1..=1`,
+  full-stick = ±90 °/s) now route through the existing rate→position
+  integrator (`apply_rate_increment`) — the same path SET_PITCHYAW and
+  SET_ATTITUDE already use, so joystick feel is consistent across all
+  three messages. Single-axis NaN angles collapse to 0 (center), matching
+  the SET_PITCHYAW convention. The position-angle path now also applies
+  `yaw_to_vehicle_frame` so a GCS that sets `YAW_IN_EARTH_FRAME` gets
+  earth-frame interpretation. Five unit tests cover the
+  `manual_rate_to_deg_per_s` scaler (full stick, half stick, zero, NaN,
+  out-of-range pass-through).
+
 ### Fixed
 - **`MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE` honors the `-1 / -2 / -3 / 0`
   special-value semantics from the MAVLink common.xml spec.** The old
