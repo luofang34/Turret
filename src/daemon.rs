@@ -50,7 +50,7 @@
 //! // have one, just leave it un-awaited.
 //! let notify_lost = Arc::new(Notify::new());
 //!
-//! let manager = MavlinkManager::new(state, gimbal, notify_lost);
+//! let manager = MavlinkManager::new(state, gimbal, notify_lost, true);
 //! manager.start(MavlinkConfig {
 //!     enabled: true,
 //!     transport: Transport::Udp,
@@ -227,9 +227,15 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         let mavlink_state = state_manager.clone();
         let mavlink_cfg = config.mavlink.clone();
         let mavlink_notify_lost = notify_lost.clone();
+        let yaw_corrector_enabled = config.gimbal.yaw_corrector_enabled;
 
         spawn_critical(&mut tasks, "mavlink", &task_died, async move {
-            let manager = MavlinkManager::new(mavlink_state, mavlink_gimbal, mavlink_notify_lost);
+            let manager = MavlinkManager::new(
+                mavlink_state,
+                mavlink_gimbal,
+                mavlink_notify_lost,
+                yaw_corrector_enabled,
+            );
             if let Err(e) = manager.start(mavlink_cfg).await {
                 error!("MAVLink manager error: {}", e);
             }

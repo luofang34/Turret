@@ -39,6 +39,16 @@ mavlink:
   # MAVLink component ID (154 = MAV_COMP_ID_GIMBAL)
   compid: 154
 
+# Gimbal-physical / calibration tuning
+gimbal:
+  # Continuous yaw drift corrector ("self-erecting gyro"). Default: true.
+  # Once the gimbal has been settled at the most-recent SP for ≥ 2 s the
+  # corrector treats the operator-frame `PV - SP` gap as drift and nudges
+  # the calibration offset to close it. Disable for actively-yawing
+  # flight with pan-mode PAN, where the "gimbal at rest in the world
+  # between SETs" assumption breaks down.
+  yaw_corrector_enabled: true
+
 # Logging configuration
 logging:
   # Log level: "trace", "debug", "info", "warn", "error"

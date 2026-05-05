@@ -39,6 +39,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the additional fields yet — they're available for future consumers
   (horizon-lock pan, velocity-aware lead/lag, yaw-rate feed-forward on
   earth-frame rate commands) without re-touching the wire path.
+- **`gimbal.yaw_corrector_enabled` config knob** to toggle the
+  continuous yaw drift corrector landed in PR #53. Default `true`
+  (matches the previous always-on behavior so existing YAMLs keep
+  working without edits). Set to `false` for actively-yawing flight
+  with pan-mode PAN, where the "gimbal at rest in the world between
+  SETs" assumption breaks and the corrector would slowly walk the
+  calibration off. Lives in a new `gimbal:` section so future
+  hardware-side knobs (mount yaw offset, calibration sweep limits)
+  accrete in one place. The flag plumbs from `DaemonConfig.gimbal` →
+  `MavlinkManager::new(..., yaw_corrector_enabled)` → `attitude_loop`,
+  where `corrector` is now `Option<YawCorrector>` (`None` skips the
+  step + persistence path entirely). Four new unit tests cover the
+  default value, missing-section default, empty-section default, and
+  explicit `false`.
 
 ### Fixed
 - **STorM32 read failures now surface to the daemon's poll loop.**

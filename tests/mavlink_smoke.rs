@@ -143,7 +143,7 @@ async fn set_pitchyaw_round_trips_through_attitude_status_broadcast() {
     let state_manager = StateManager::new();
     let notify_lost = Arc::new(Notify::new());
 
-    let manager = MavlinkManager::new(state_manager, gimbal, notify_lost);
+    let manager = MavlinkManager::new(state_manager, gimbal, notify_lost, true);
     let _manager_task = tokio::spawn({
         let cfg = config.clone();
         async move {
