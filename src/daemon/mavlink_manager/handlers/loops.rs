@@ -5,10 +5,12 @@
 use super::build::{
     broadcast_to_peers, build_attitude_status_data, build_gimbal_manager_status_data,
 };
+use crate::daemon::calibration::Calibration;
 use crate::daemon::config::MavlinkConfig;
 use crate::daemon::gimbal_handle::GimbalHandle;
 use crate::daemon::mavlink_manager::Peers;
 use crate::daemon::state::StateManager;
+use crate::daemon::yaw_corrector::YawCorrector;
 use mavlink::ardupilotmega::{
     GimbalDeviceErrorFlags, MavAutopilot, MavMessage, MavModeFlag, MavState, MavType,
     HEARTBEAT_DATA,
@@ -95,6 +97,7 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_loop(
     gimbal: GimbalHandle,
     start_time: Instant,
     notify_lost: Arc<Notify>,
+    corrector: YawCorrector,
 ) {
     /// Number of consecutive poll failures (~250 ms each) before we declare
     /// the device gone and ask the reconnect task to take over. 8 ticks =
@@ -106,6 +109,17 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_loop(
     /// flaky devices keep the flag set so a GCS sees `degraded` instead
     /// of `healthy` on every other frame.
     const COMMS_ERROR_LINGER: Duration = Duration::from_secs(1);
+    /// Yaw corrector persistence: only write to disk after the offset
+    /// has slid by more than this much from the last persisted value.
+    /// Below this threshold the in-memory offset is still applied; the
+    /// only consequence of skipping the write is that a daemon crash
+    /// would lose < this much of accumulated correction.
+    const PERSIST_THRESHOLD_DEG: f32 = 0.05;
+    /// Yaw corrector persistence: minimum interval between two
+    /// successful disk writes. Caps disk write rate at 1 / minute even
+    /// during a long initial convergence pass when the offset would
+    /// otherwise cross `PERSIST_THRESHOLD_DEG` every few seconds.
+    const PERSIST_INTERVAL: Duration = Duration::from_secs(60);
 
     let mut interval = time::interval(Duration::from_millis(250));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -113,6 +127,13 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_loop(
     interval.tick().await;
     let mut consecutive_failures: u32 = 0;
     let mut last_failure: Option<Instant> = None;
+    // Yaw corrector persistence state. Seeded with the offset that was
+    // already loaded into `GimbalHandle` at boot (from the XDG state
+    // file via `Calibration::load()`); the corrector only triggers a
+    // disk write when its accumulated drift correction moves the
+    // offset materially away from that seed.
+    let mut last_persisted_offset: f32 = gimbal.yaw_offset_deg();
+    let mut last_persist_at: Option<Instant> = None;
 
     loop {
         interval.tick().await;
@@ -151,6 +172,54 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_loop(
         };
 
         state_manager.update_measured_angles(attitude.yaw, attitude.pitch, attitude.roll);
+
+        // Continuous yaw drift correction. When the gimbal has been
+        // settled at the most-recent SP for at least `SETTLE_AFTER`,
+        // the operator-frame `PV - SP` gap is treated as accumulated
+        // drift and an `α`-weighted slice of it is added to the
+        // calibration offset. See `daemon::yaw_corrector` for the
+        // math + non-goals. No-op until at least one `set` has gone
+        // through the arbitrator.
+        let last_command = state_manager.get_last_command();
+        let last_sp_yaw = last_command.as_ref().and_then(|c| c.yaw);
+        let time_since_set = last_command
+            .as_ref()
+            .and_then(|c| c.timestamp.elapsed().ok());
+        if let Some(step) = corrector.step(attitude.yaw, last_sp_yaw, time_since_set) {
+            let new_offset = gimbal.yaw_offset_deg() + step.correction_deg;
+            gimbal.set_yaw_offset_deg(new_offset);
+            // Throttled persistence — disk write only when the offset
+            // has slid more than a noise-band's worth from what's on
+            // disk, AND the last save was a while ago. Bounded
+            // disk-write rate (~1/min worst case) regardless of
+            // correction activity. Persistence failure is non-fatal —
+            // the in-memory offset is still applied for this run.
+            if (new_offset - last_persisted_offset).abs() > PERSIST_THRESHOLD_DEG
+                && last_persist_at
+                    .map(|t| t.elapsed() >= PERSIST_INTERVAL)
+                    .unwrap_or(true)
+            {
+                let cal = Calibration {
+                    yaw_offset_deg: new_offset,
+                };
+                match cal.save() {
+                    Ok(()) => {
+                        info!(
+                            "Yaw corrector: persisted offset {:.3}° (was {:.3}°, error {:.3}°)",
+                            new_offset, last_persisted_offset, step.error_deg
+                        );
+                        last_persisted_offset = new_offset;
+                        last_persist_at = Some(Instant::now());
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Yaw corrector: persist failed (in-memory offset still applied): {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
 
         // A *recent* failure (this poll succeeded but one within the last
         // second didn't) means the link is flaky. Surface that to the GCS

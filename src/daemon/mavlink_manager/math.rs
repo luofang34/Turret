@@ -124,7 +124,7 @@ pub(super) fn clamp_rate_dt(dt: std::time::Duration) -> std::time::Duration {
 /// which can leave the result outside that range (e.g. earth=170°,
 /// vehicle=-170° → 340°). Wrap so the gimbal driver and downstream
 /// clamps don't see surprising magnitudes.
-pub(super) fn wrap_180_deg(deg: f32) -> f32 {
+pub(crate) fn wrap_180_deg(deg: f32) -> f32 {
     let mut x = deg % 360.0;
     if x > 180.0 {
         x -= 360.0;

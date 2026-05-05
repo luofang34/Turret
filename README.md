@@ -150,6 +150,43 @@ them (the gimbal physically goes to the asked-for angle), and the
 calibration offset is subtracted from the IMU's report before it reaches
 any consumer (IPC `status`, MAVLink `GIMBAL_DEVICE_ATTITUDE_STATUS`).
 
+#### Continuous drift correction
+
+After the boot-time calibration captures the initial bias, the daemon
+runs a slow integral controller on every 4 Hz attitude poll: once the
+gimbal has been settled at the most recent SP for 2 s, the operator-frame
+`PV - SP` gap is treated as accumulated IMU drift and a tiny slice of
+it (capped at 0.05° per call → ~0.2°/s of correction) is added to the
+calibration offset. Geometric convergence with a ~50 s time constant
+keeps the offset honest over hours, so you don't need to re-run
+`calibrate_yaw` mid-session as the IMU drifts.
+
+The corrected offset is persisted back to the same XDG state file
+(throttled — at most one disk write per minute, and only after the
+offset has slid more than 0.05° from the last persisted value).
+
+The corrector assumes the gimbal is at rest in the world between SETs,
+which is true for static mounts, parked vehicles, and pan-mode HOLD on
+moving vehicles. In actively-yawing flight with pan-mode PAN it can
+mistake vehicle motion for IMU drift; if that's your deployment,
+disable it via the future `gimbal.yaw_corrector_enabled = false`
+config knob (defaults to on; not yet exposed).
+
+#### Future hardware paths
+
+- **Encoder feedback** on the gimbal motor shafts (a STorM32 firmware
+  option) would give absolute axis positions independent of the IMU.
+  From the daemon's perspective the data arrives through the same
+  `IMU1ANGLES` channel and is drift-free for free; no daemon-side
+  change required.
+- **Non-orthogonal axis design** (each axis off-vertical so gravity
+  contributes a yaw-axis reference) is a vendor-side choice the
+  STorM32 firmware abstracts; transparent at the host level.
+- **Cross-IMU comparison** with autopilot AHRS for actively-flying
+  pan-mode-PAN deployments: planned. We already ingest
+  `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE`; a future revision will use
+  vehicle yaw as the reference instead of `PV - SP`.
+
 ### Self-test
 
 Verify SP→PV agreement across the gimbal's working range without leaving
