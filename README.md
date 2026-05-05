@@ -101,6 +101,26 @@ and field names — matches the response shape (`firmware_version`,
 `pan_mode`, ...) and standard JSON conventions. Send `{"cmd":"help"}`
 for the full machine-readable schema.
 
+### Reading attitude after a `set`
+
+`status` returns the most recent attitude polled by the daemon's 4 Hz
+attitude loop — at most ~250 ms behind the IMU, but more importantly
+it doesn't wait for the gimbal to physically settle on the new SP. The
+STorM32 motor traverses at roughly 10°/s, so a `set 0,0,10` followed
+immediately by `status` will show pitch/yaw still en route. Allow ~1.5
+to 2 seconds of motor travel for a 10° swing before reading status if
+you need the settled value:
+
+```bash
+turret set 0,0,10
+sleep 2          # let the gimbal physically reach the SP
+turret status    # now reflects the new pose
+```
+
+For a verified round-trip across the full working range, use
+`{"cmd":"selftest"}` — it sweeps, waits per-step, samples freshly, and
+reports per-axis SP/PV errors.
+
 ### Yaw calibration
 
 If your gimbal's IMU yaw reading is biased relative to its commanded
