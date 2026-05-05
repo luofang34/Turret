@@ -28,6 +28,7 @@ mod set;
 use super::build::send_gimbal_manager_information;
 use crate::daemon::mavlink_manager::math::quaternion_wxyz_to_euler_deg;
 use crate::daemon::mavlink_manager::RxCtx;
+use crate::daemon::state::VehicleState;
 use mavlink::ardupilotmega::{MavMessage, AUTOPILOT_STATE_FOR_GIMBAL_DEVICE_DATA};
 use std::net::SocketAddr;
 use tracing::debug;
@@ -72,15 +73,30 @@ pub(in crate::daemon::mavlink_manager) async fn handle_mavlink_message(
     }
 }
 
-/// Ingest the autopilot's vehicle attitude. Only the yaw axis is stored
-/// today — used by the earth-frame yaw transformation in the SET_*
-/// handlers. Pitch / roll come "for free" if/when the gimbal-frame
-/// outputs need full vehicle attitude.
+/// Ingest the autopilot's full vehicle state from
+/// `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE`. The quaternion is required (we
+/// drop the whole packet if it's NaN — without an attitude estimate
+/// the rest of the message is operationally useless to a gimbal). The
+/// scalar fields preserve their NaN sentinels per the spec ("NaN if
+/// unknown" for velocity / feed-forward yaw rate); the typed
+/// [`VehicleState::yaw_rate_deg_s`] uses `Option<f32>` so consumers
+/// can branch on validity without re-checking NaN.
 fn on_autopilot_state(m: AUTOPILOT_STATE_FOR_GIMBAL_DEVICE_DATA, ctx: &RxCtx<'_>) {
     if m.q.iter().any(|c| c.is_nan()) {
         debug!("AUTOPILOT_STATE_FOR_GIMBAL_DEVICE with NaN quaternion — ignoring");
         return;
     }
-    let (_pitch, _roll, yaw_deg) = quaternion_wxyz_to_euler_deg(m.q);
-    ctx.state.update_vehicle_yaw(yaw_deg);
+    let (pitch_deg, roll_deg, yaw_deg) = quaternion_wxyz_to_euler_deg(m.q);
+    let yaw_rate_deg_s = if m.feed_forward_angular_velocity_z.is_nan() {
+        None
+    } else {
+        Some(m.feed_forward_angular_velocity_z.to_degrees())
+    };
+    ctx.state.update_vehicle_state(VehicleState {
+        pitch_deg,
+        roll_deg,
+        yaw_deg,
+        yaw_rate_deg_s,
+        ned_velocity_m_s: (m.vx, m.vy, m.vz),
+    });
 }
