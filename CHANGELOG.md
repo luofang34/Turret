@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   earth-frame interpretation. Five unit tests cover the
   `manual_rate_to_deg_per_s` scaler (full stick, half stick, zero, NaN,
   out-of-range pass-through).
+- **Full `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE` ingest.** The handler used
+  to keep only the yaw component of the autopilot's quaternion and drop
+  the rest of the message — pitch / roll, NED velocity, feed-forward
+  yaw rate. New `daemon::state::VehicleState` struct now stores the
+  decoded full attitude (Euler degrees), velocity triple, and
+  `Option<f32>` yaw-rate (NaN-aware: `None` for "not yawing actively /
+  estimator can't tell," distinct from positive zero). `update_vehicle_yaw`
+  is replaced by `update_vehicle_state`; `vehicle_yaw_deg(max_age)` is
+  retained as a thin convenience over `vehicle_state(max_age).map(|s| s.yaw_deg)`,
+  so the existing earth-frame transform path is unaffected. Per-axis NaN
+  on velocity is preserved (the spec says "NaN if unknown" and a fake
+  zero would be a positive-but-wrong claim). Two new tests cover the
+  round-trip and per-axis NaN preservation. No new behavior is wired to
+  the additional fields yet — they're available for future consumers
+  (horizon-lock pan, velocity-aware lead/lag, yaw-rate feed-forward on
+  earth-frame rate commands) without re-touching the wire path.
 
 ### Fixed
 - **`MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE` honors the `-1 / -2 / -3 / 0`

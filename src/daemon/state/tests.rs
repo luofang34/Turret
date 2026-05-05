@@ -48,16 +48,27 @@ fn test_state_update() {
     assert!(state.measured_at.is_some());
 }
 
+fn sample_vehicle_state(yaw_deg: f32) -> VehicleState {
+    VehicleState {
+        pitch_deg: 0.0,
+        roll_deg: 0.0,
+        yaw_deg,
+        yaw_rate_deg_s: None,
+        ned_velocity_m_s: (0.0, 0.0, 0.0),
+    }
+}
+
 #[test]
 fn vehicle_yaw_returns_none_until_set() {
     let m = StateManager::new();
     assert!(m.vehicle_yaw_deg(Duration::from_secs(1)).is_none());
+    assert!(m.vehicle_state(Duration::from_secs(1)).is_none());
 }
 
 #[test]
 fn vehicle_yaw_returns_value_within_window() {
     let m = StateManager::new();
-    m.update_vehicle_yaw(42.5);
+    m.update_vehicle_state(sample_vehicle_state(42.5));
     let yaw = m.vehicle_yaw_deg(Duration::from_secs(1));
     assert!(yaw.is_some());
     assert!((yaw.unwrap() - 42.5).abs() < 1e-4);
@@ -66,11 +77,56 @@ fn vehicle_yaw_returns_value_within_window() {
 #[test]
 fn vehicle_yaw_returns_none_when_stale() {
     let m = StateManager::new();
-    m.update_vehicle_yaw(42.5);
+    m.update_vehicle_state(sample_vehicle_state(42.5));
     // 0 ns max-age means "everything is stale" — proxy for the
     // real "last AUTOPILOT_STATE was > 1 s ago" case without
     // sleeping the test.
     assert!(m.vehicle_yaw_deg(Duration::ZERO).is_none());
+}
+
+#[test]
+fn vehicle_state_round_trips_full_struct() {
+    // Confirm every field decoded from AUTOPILOT_STATE_FOR_GIMBAL_DEVICE
+    // makes it through update / read unchanged. Catches future
+    // refactors that might silently drop a field while keeping the
+    // yaw-only convenience accessor working.
+    let m = StateManager::new();
+    let s = VehicleState {
+        pitch_deg: -3.5,
+        roll_deg: 1.25,
+        yaw_deg: 175.0,
+        yaw_rate_deg_s: Some(2.5),
+        ned_velocity_m_s: (10.0, -1.0, 0.5),
+    };
+    m.update_vehicle_state(s);
+    let got = m.vehicle_state(Duration::from_secs(1)).unwrap();
+    assert!((got.pitch_deg - s.pitch_deg).abs() < 1e-4);
+    assert!((got.roll_deg - s.roll_deg).abs() < 1e-4);
+    assert!((got.yaw_deg - s.yaw_deg).abs() < 1e-4);
+    assert!(got.yaw_rate_deg_s.is_some());
+    assert!((got.yaw_rate_deg_s.unwrap() - 2.5).abs() < 1e-4);
+    assert_eq!(got.ned_velocity_m_s.0, 10.0);
+    assert_eq!(got.ned_velocity_m_s.1, -1.0);
+    assert_eq!(got.ned_velocity_m_s.2, 0.5);
+}
+
+#[test]
+fn vehicle_state_preserves_nan_velocity_per_axis() {
+    // Spec says NAN per axis is allowed for velocity ("unknown"). Don't
+    // collapse it to zero — consumers branch on per-axis validity and
+    // a fake zero would be a positive-but-wrong claim.
+    let m = StateManager::new();
+    m.update_vehicle_state(VehicleState {
+        pitch_deg: 0.0,
+        roll_deg: 0.0,
+        yaw_deg: 0.0,
+        yaw_rate_deg_s: None,
+        ned_velocity_m_s: (1.0, f32::NAN, 0.0),
+    });
+    let got = m.vehicle_state(Duration::from_secs(1)).unwrap();
+    assert_eq!(got.ned_velocity_m_s.0, 1.0);
+    assert!(got.ned_velocity_m_s.1.is_nan());
+    assert_eq!(got.ned_velocity_m_s.2, 0.0);
 }
 
 #[test]
