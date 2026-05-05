@@ -144,26 +144,6 @@ pub(super) fn earth_to_vehicle_yaw_deg(earth_yaw_deg: f32, vehicle_yaw_deg: f32)
     wrap_180_deg(earth_yaw_deg - vehicle_yaw_deg)
 }
 
-/// Convert a `COMMAND_LONG` param (`f32`) to a MAVLink sysid/compid byte.
-///
-/// The MAVLink v2 spec reserves negative values (-3, -2, -1) for special
-/// semantics on `MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE`. They are not yet
-/// honored here — any non-positive value collapses to 0 ("unset").
-///
-/// TODO(item-5): implement -3 (retain current) / -2 (reset to default) /
-/// -1 (no primary) per MAVLink spec.
-pub(super) fn to_id_byte(v: f32) -> u8 {
-    if !v.is_finite() || v < 0.0 {
-        return 0;
-    }
-    let r = v.round();
-    if r > 255.0 {
-        255
-    } else {
-        r as u8
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -253,20 +233,6 @@ mod tests {
         assert!((earth_to_vehicle_yaw_deg(170.0, -170.0) - -20.0).abs() < 1e-4);
         // earth=-170°, vehicle=170° → -340° → wrap → 20°.
         assert!((earth_to_vehicle_yaw_deg(-170.0, 170.0) - 20.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn to_id_byte_clamps_and_rejects_special_values() {
-        assert_eq!(to_id_byte(7.0), 7);
-        assert_eq!(to_id_byte(7.4), 7);
-        assert_eq!(to_id_byte(7.6), 8);
-        assert_eq!(to_id_byte(0.0), 0);
-        assert_eq!(to_id_byte(300.0), 255);
-        assert_eq!(to_id_byte(-1.0), 0);
-        assert_eq!(to_id_byte(-3.0), 0);
-        assert_eq!(to_id_byte(f32::NAN), 0);
-        assert_eq!(to_id_byte(f32::INFINITY), 0);
-        assert_eq!(to_id_byte(f32::NEG_INFINITY), 0);
     }
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {

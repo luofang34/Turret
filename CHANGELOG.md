@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE` honors the `-1 / -2 / -3 / 0`
+  special-value semantics from the MAVLink common.xml spec.** The old
+  `to_id_byte` helper clamped every negative param to `0` ("permanent
+  release"), which made `-1` ("leave unchanged") silently reset
+  ownership on every CONFIGURE call from a GCS that didn't realize it
+  had to populate every field. New `ConfigureField` enum decodes
+  per-field — `-1` keep, `-2` claim self (substitutes the requesting
+  sysid/compid), `-3` release-if-mine (only clears when the existing
+  value matches the requester — prevents impersonation), `0` release
+  unconditionally, otherwise literal byte. ArduPilot relies on `-3`
+  for ownership handoff between the autopilot and a GCS; without this
+  the handoff broke. 11 unit tests cover decode + apply for every
+  variant; 6 paths re-verified on hardware end-to-end.
+
+### Changed (BREAKING — config default)
+- **`mavlink.bind_addr` default is now `127.0.0.1`** (loopback only),
+  was `0.0.0.0`. Embedded products inherit a safer default — MAVLink
+  isn't exposed to the LAN unless the operator opts in. Companion-on-
+  network setups (autopilot or GCS on a different host) need to add
+  `mavlink.bind_addr: 0.0.0.0` (or a specific interface address) to
+  `turret.yaml`. Single-line config change; the daemon logs the bound
+  address on startup so the new default is visible.
+
 ### Added
 - **Continuous yaw drift corrector ("self-erecting gyro").** STorM32
   IMUs have no absolute yaw reference (only gravity-corrected pitch /
