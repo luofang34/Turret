@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or stop the daemon.
 
 ### Changed
+- **MSRV bumped to 1.83** — required for `std::io::ErrorKind::ResourceBusy`,
+  used by the EBUSY-aware `detect_gimbal` path. The earlier 1.74 floor
+  (driven by `Cargo.toml [lints]` tables) still applies.
 - **Lean tokio runtime: `current_thread` flavor + minimal feature set.**
   The daemon's actual concurrency need — IPC accept loop, MAVLink RX,
   three broadcast loops, attitude poll, reconnect supervisor — is

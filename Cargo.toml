@@ -11,10 +11,11 @@ documentation = "https://docs.rs/turret"
 readme = "README.md"
 keywords = ["turret", "gimbal", "storm32", "mavlink", "serial"]
 categories = ["command-line-utilities", "hardware-support"]
-# 1.74 is the floor for `[lints]` tables in Cargo.toml. Without this,
-# the lints below silently fall back to the lib.rs `#![deny()]` block,
-# which doesn't propagate to consumers using `cargo metadata`.
-rust-version = "1.74"
+# 1.83 is the floor for `std::io::ErrorKind::ResourceBusy` (used in
+# `detect_gimbal` to distinguish EBUSY from "no device found"). The
+# earlier 1.74 floor was driven by the `[lints]` tables below; both
+# are still required.
+rust-version = "1.83"
 # Dev artifacts that have no business shipping in the crates.io tarball.
 # Source files that ARE compiled live under src/ and are included by default;
 # this list only filters auxiliary docs / scripts at the repo root.
