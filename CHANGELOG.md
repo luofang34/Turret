@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **CLI is now a thin client over the daemon's IPC socket.** Each
+  subcommand (`status`, `set`, `center`, `version`, `pan-mode`,
+  `standby`) tries to dial `/tmp/turret.sock` first (override with
+  `--socket <path>`); when reachable, the call routes through the daemon
+  — same arbitration, calibration, and primary-control path a MAVLink
+  GCS would take. When the socket isn't reachable (no daemon running),
+  the CLI falls back to opening the device directly and applying the
+  persisted yaw calibration from `$XDG_STATE_HOME/turret/calibration.toml`,
+  so `status` reads the same value either way. New `--socket <path>`
+  global flag opens the path forward to multi-gimbal (one daemon per
+  device, distinct socket per instance). Direct-only subcommands —
+  `pitch`, `roll`, `yaw` (single-axis RC writes), and `version-str` —
+  now surface `Error::DeviceBusy` cleanly when a daemon is holding the
+  port (combined with the fix below) so the operator knows to use
+  `turret set` (IPC-routed) or stop the daemon.
+
 ### Fixed
 - **MAVLink peer map is now bounded.** `Peers` was an unbounded
   `HashSet<SocketAddr>` — every unique inbound UDP source got added

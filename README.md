@@ -27,35 +27,50 @@ cargo install turret
 
 ## Usage
 
-### CLI Mode (Direct Control)
+### CLI
+
+The CLI is a thin client. Each subcommand prefers the daemon's IPC
+socket (`/tmp/turret.sock` by default; override with `--socket <path>`).
+When the daemon is running, commands route through it — same arbitration,
+calibration, and primary-control as MAVLink/IPC clients see. When no
+daemon is running, the CLI opens the device directly for the call.
 
 ```bash
-# Basic commands (auto-detects device)
+# Basic commands — work the same way whether or not a daemon is running.
 turret status
 turret set 10.0 0.0 -15.0
 turret set -10,0,15          # comma-separated
 turret set 1.5:-2.3:0        # colon-separated
 turret center
 turret version
+turret pan-mode 3            # PANPANPAN
+turret standby true
 
-# Manual device specification
+# Pick a specific daemon by socket path (multi-gimbal setups).
+turret --socket /tmp/turret-front.sock status
+turret --socket /tmp/turret-rear.sock  set 0,0,30
+
+# Direct-only commands (no IPC equivalent — daemon must not be holding
+# the port). Errors with `Error::DeviceBusy` if a daemon is running.
+turret pitch 1500            # RC value 700-2300, 0 to recenter
+turret roll 0                # recenter roll
+turret version-str
+
+# Direct-mode device override (only used when daemon socket isn't reachable).
 turret --device /dev/ttyUSB0 status
 
-# Verbose output for debugging
-turret -v status          # info
-turret -vv status         # debug
-turret -vvv status        # trace (shows raw protocol)
-
-# Individual axis control
-turret pitch 1500         # RC values 700-2300, 0 to recenter
-turret roll 0             # recenter roll
-
-# Pan mode and standby
-turret pan-mode 3         # PANPANPAN mode
-turret standby true
+# Verbose tracing.
+turret -v status             # info
+turret -vv status            # debug
+turret -vvv status           # trace (raw protocol)
 ```
 
-### Daemon Mode (Background Service)
+If a daemon is holding the device and you try a direct-only subcommand
+(`pitch`, `roll`, `yaw`, `version-str`), you'll get
+`Error::DeviceBusy` rather than a misleading "not detected" — stop the
+daemon to use them, or use `turret set` (which routes via IPC) instead.
+
+### Daemon mode (background service)
 
 ```bash
 # Start daemon (auto-detects device)
@@ -63,17 +78,22 @@ turret --daemon
 
 # Or with custom config
 turret --daemon --config turret.yaml
+```
 
-# Connect via Unix socket (JSON commands)
-echo '{"cmd": "status"}' | nc -U /tmp/turret.sock
-echo '{"cmd": "set", "pitch": 10.0, "roll": 0.0, "yaw": -15.0}' | nc -U /tmp/turret.sock
-echo '{"cmd": "center"}' | nc -U /tmp/turret.sock
-echo '{"cmd": "pan_mode", "mode": 3}' | nc -U /tmp/turret.sock
-echo '{"cmd": "standby", "enabled": true}' | nc -U /tmp/turret.sock
-echo '{"cmd": "help"}' | nc -U /tmp/turret.sock     # full schema
+Once running, the CLI talks to it automatically (see above). For
+machine-readable / programmatic use, the IPC socket speaks line-delimited
+JSON:
 
-# MAVLink on UDP:14550 - use pymavlink or QGroundControl
-# Implements Gimbal Manager protocol
+```bash
+echo '{"cmd": "status"}'                                      | nc -U /tmp/turret.sock
+echo '{"cmd": "set", "pitch": 10.0, "roll": 0.0, "yaw": -15}' | nc -U /tmp/turret.sock
+echo '{"cmd": "center"}'                                      | nc -U /tmp/turret.sock
+echo '{"cmd": "pan_mode", "mode": 3}'                         | nc -U /tmp/turret.sock
+echo '{"cmd": "standby", "enabled": true}'                    | nc -U /tmp/turret.sock
+echo '{"cmd": "help"}'                                        | nc -U /tmp/turret.sock
+
+# MAVLink on UDP:14550 — pymavlink, QGroundControl, etc.
+# Implements Gimbal Manager protocol.
 ```
 
 The IPC wire format uses `snake_case` for both the `cmd` discriminator
