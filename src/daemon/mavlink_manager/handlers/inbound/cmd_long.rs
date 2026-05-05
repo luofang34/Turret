@@ -7,7 +7,7 @@
 //! `arbitrate → set_attitude → ack` flow is inlined per case rather
 //! than going through `dispatch_gimbal_command`.
 
-use super::common::{addressed_to_us, clamp_pry};
+use super::common::{addressed_to_us, clamp_pry, yaw_to_vehicle_frame};
 use super::rate::{any_rate_active, apply_rate_increment};
 use crate::daemon::arbitrator::Outcome;
 use crate::daemon::mavlink_manager::handlers::build::{
@@ -16,9 +16,31 @@ use crate::daemon::mavlink_manager::handlers::build::{
 };
 use crate::daemon::mavlink_manager::RxCtx;
 use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
-use mavlink::ardupilotmega::{MavCmd, MavMessage, MavResult, COMMAND_LONG_DATA};
+use mavlink::ardupilotmega::{
+    GimbalManagerFlags, MavCmd, MavMessage, MavResult, COMMAND_LONG_DATA,
+};
 use std::net::SocketAddr;
 use tracing::{debug, error, info, warn};
+
+/// Decode `MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW`'s `param5` (an `f32`
+/// carrying a `u32` bitmask of `GimbalManagerFlags`) into the typed
+/// flag set.
+///
+/// MAVLink's `COMMAND_LONG` is a generic 7-float container, so flag
+/// fields ride as floats and need explicit coercion. NaN / negative /
+/// out-of-range inputs collapse to `empty()` (vehicle-frame default
+/// per the spec) so a malformed GCS can't accidentally enable
+/// earth-frame interpretation it didn't ask for.
+fn flags_from_param5(p: f32) -> GimbalManagerFlags {
+    if !p.is_finite() || p < 0.0 {
+        return GimbalManagerFlags::empty();
+    }
+    let bits = p.round();
+    if bits > u32::MAX as f32 {
+        return GimbalManagerFlags::empty();
+    }
+    GimbalManagerFlags::from_bits_truncate(bits as u32)
+}
 
 pub(super) async fn on_command_long(
     sender_sysid: u8,
@@ -148,6 +170,8 @@ async fn on_cmd_pitchyaw(
 
     let pitch_in = if cmd.param1.is_nan() { 0.0 } else { cmd.param1 };
     let yaw_in = if cmd.param2.is_nan() { 0.0 } else { cmd.param2 };
+    let flags = flags_from_param5(cmd.param5);
+    let yaw_in = yaw_to_vehicle_frame(yaw_in, flags, ctx, "DO_GIMBAL_MANAGER_PITCHYAW");
     let (pitch, _roll, yaw) = clamp_pry(pitch_in, 0.0, yaw_in, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
@@ -318,12 +342,13 @@ async fn on_cmd_configure(
 mod tests {
     //! Unit tests for `ConfigureField` — the decode + per-field apply
     //! logic that determines how `param1..param4` of CONFIGURE map onto
-    //! primary / secondary sysid+compid changes. The async wrapper
-    //! around it (`on_cmd_configure`) is harder to test in isolation
-    //! without a mock RxCtx; the math here is what actually decides the
-    //! ownership change.
+    //! primary / secondary sysid+compid changes — and `flags_from_param5`,
+    //! the bitmask decoder used by the PITCHYAW command. The async
+    //! wrappers around them (`on_cmd_configure`, `on_cmd_pitchyaw`) are
+    //! harder to test in isolation without a mock RxCtx; the math here
+    //! is what actually decides ownership and frame interpretation.
 
-    use super::ConfigureField;
+    use super::*;
 
     #[test]
     fn decode_negative_one_is_no_change() {
@@ -440,5 +465,50 @@ mod tests {
     #[test]
     fn apply_literal_overwrites() {
         assert_eq!(ConfigureField::Literal(154).apply(42, 99), 154);
+    }
+
+    #[test]
+    fn flags_from_param5_decodes_valid_bits() {
+        let f = flags_from_param5(64.0);
+        assert!(f.contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_EARTH_FRAME));
+    }
+
+    #[test]
+    fn flags_from_param5_rounds_near_integer_floats() {
+        // GCS may emit 64.0 as 63.9999… through f32 round-trip.
+        let f = flags_from_param5(63.9999);
+        assert!(f.contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_EARTH_FRAME));
+    }
+
+    #[test]
+    fn flags_from_param5_rejects_nan() {
+        assert_eq!(flags_from_param5(f32::NAN), GimbalManagerFlags::empty());
+    }
+
+    #[test]
+    fn flags_from_param5_rejects_negative() {
+        assert_eq!(flags_from_param5(-1.0), GimbalManagerFlags::empty());
+        assert_eq!(
+            flags_from_param5(f32::NEG_INFINITY),
+            GimbalManagerFlags::empty()
+        );
+    }
+
+    #[test]
+    fn flags_from_param5_rejects_overflow() {
+        assert_eq!(
+            flags_from_param5(f32::INFINITY),
+            GimbalManagerFlags::empty()
+        );
+        // 2^33 — beyond u32::MAX.
+        assert_eq!(
+            flags_from_param5(8_589_934_592.0),
+            GimbalManagerFlags::empty()
+        );
+    }
+
+    #[test]
+    fn flags_from_param5_zero_is_empty_default_vehicle_frame() {
+        assert_eq!(flags_from_param5(0.0), GimbalManagerFlags::empty());
     }
 }

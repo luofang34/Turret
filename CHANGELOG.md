@@ -70,6 +70,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `turret set` (IPC-routed) or stop the daemon.
 
 ### Fixed
+- **`MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW` now honors the earth-frame yaw
+  flag.** The `COMMAND_LONG` path was ignoring `param5` (the
+  `GimbalManagerFlags` bitmask), so a GCS that set
+  `YAW_IN_EARTH_FRAME` got its commanded yaw treated as vehicle-frame —
+  the same bug `SET_PITCHYAW` had before earth-frame support landed.
+  Now decodes `param5` via `flags_from_param5` (rejecting NaN /
+  negative / overflow as `empty()`, the spec's vehicle-frame default)
+  and routes through the existing `yaw_to_vehicle_frame` helper, so
+  CMD_LONG and SET_PITCHYAW share one earth→vehicle conversion path
+  with identical stale-attitude fallback. Six unit tests cover the
+  flag decoder.
 - **MAVLink peer map is now bounded.** `Peers` was an unbounded
   `HashSet<SocketAddr>` — every unique inbound UDP source got added
   forever. Under sustained traffic from many sources (ephemeral ports,
