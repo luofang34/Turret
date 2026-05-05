@@ -6,10 +6,20 @@ use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 
-/// Default `bind_addr` if the YAML omits it: `0.0.0.0` (all interfaces).
-/// Matches the historical behavior so existing configs are unaffected.
+/// Default `bind_addr` if the YAML omits it: `127.0.0.1` (loopback only).
+///
+/// Embedded products inherit this default — companion-on-network setups
+/// (autopilot on a different host than the gimbal manager, GCS on a
+/// laptop talking to a Pi) must opt into a wider bind explicitly with
+/// `mavlink.bind_addr: 0.0.0.0` (or a specific interface address) in
+/// `turret.yaml`.
+///
+/// Earlier versions defaulted to `0.0.0.0`. Existing deployments that
+/// relied on the broad bind will see the daemon stop responding to
+/// off-host MAVLink traffic until the YAML is updated; the change is
+/// called out in the CHANGELOG as a breaking config default.
 fn default_bind_addr() -> IpAddr {
-    IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    IpAddr::V4(Ipv4Addr::LOCALHOST)
 }
 
 /// Top-level daemon config shape — one section per long-lived component.
@@ -81,10 +91,11 @@ pub struct MavlinkConfig {
     /// Wire transport — see [`Transport`].
     #[serde(default)]
     pub transport: Transport,
-    /// Local interface to bind. Defaults to `0.0.0.0` (all interfaces).
-    /// Set to `127.0.0.1` for loopback-only deployments where the firewall
-    /// rules don't cover MAVLink, or to a specific interface address when
-    /// running multi-homed.
+    /// Local interface to bind. Defaults to `127.0.0.1` (loopback only)
+    /// — safe for embedded products where MAVLink shouldn't be exposed
+    /// to the LAN by default. Set to `0.0.0.0` for companion-on-network
+    /// deployments (autopilot on a different host, GCS on a laptop), or
+    /// to a specific interface address when multi-homed.
     #[serde(default = "default_bind_addr")]
     pub bind_addr: IpAddr,
     /// UDP port (when `transport == Transport::Udp`).
