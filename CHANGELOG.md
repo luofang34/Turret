@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Continuous yaw drift corrector ("self-erecting gyro").** STorM32
+  IMUs have no absolute yaw reference (only gravity-corrected pitch /
+  roll); yaw bias drifts at ~0.5–2°/min on consumer MEMS parts, so the
+  one-shot `calibrate_yaw` offset stales over a session. The new
+  corrector runs on every 4 Hz attitude poll: once the gimbal has been
+  settled at the most recent SP for ≥ 2 s, the operator-frame `PV - SP`
+  gap is treated as drift and an integral controller (`α = 0.005`,
+  capped at 0.05°/call) nudges the calibration offset to close it.
+  Geometric convergence with ~50 s time constant; full disk-persist of
+  the corrected offset throttled to ≤ 1/min and ≥ 0.05° change. New
+  module `daemon::yaw_corrector`, 11 unit tests covering settle gating,
+  sign convention, slew cap, ±180° wrap, NaN / out-of-range rejection,
+  and a 3000-iteration convergence stress that drives a constant +5°
+  drift back to the offset.
+- Default-on; assumes the gimbal is at rest in the world between SETs
+  (true for static mounts, parked vehicles, and pan-mode HOLD). For
+  actively-yawing flight with pan-mode PAN, the future
+  `gimbal.yaw_corrector_enabled` config knob will toggle it (not
+  exposed yet — defer to first reported issue).
+
 ### Changed
 - **CLI is now a thin client over the daemon's IPC socket.** Each
   subcommand (`status`, `set`, `center`, `version`, `pan-mode`,

@@ -5,8 +5,11 @@
 
 #[path = "mavlink_manager/handlers.rs"]
 mod handlers;
+// `math` carries pure helpers (wrap_180, earth↔body yaw, quaternion).
+// Visible to the rest of the daemon so the yaw corrector can share
+// `wrap_180_deg` without duplicating it.
 #[path = "mavlink_manager/math.rs"]
-mod math;
+pub(crate) mod math;
 
 use super::arbitrator::Arbitrator;
 use super::config::{MavlinkConfig, Transport};
@@ -184,6 +187,12 @@ impl MavlinkManager {
             let gimbal = self.gimbal.clone();
             let start_time = self.start_time;
             let notify_lost = self.notify_lost.clone();
+            // Default-on yaw drift corrector with mount_yaw_deg=0
+            // (gimbal-forward-equals-vehicle-nose). When a future
+            // `gimbal.mount_yaw_deg` config knob lands, plumb it
+            // through here. The corrector itself is a no-op until at
+            // least one `set` has gone through the arbitrator.
+            let corrector = super::yaw_corrector::YawCorrector::new(0.0);
             tokio::spawn(async move {
                 handlers::attitude_loop(
                     socket,
@@ -194,6 +203,7 @@ impl MavlinkManager {
                     gimbal,
                     start_time,
                     notify_lost,
+                    corrector,
                 )
                 .await;
             });

@@ -88,6 +88,8 @@ pub mod mavlink_manager;
 pub mod models;
 #[path = "daemon/state.rs"]
 pub mod state;
+#[path = "daemon/yaw_corrector.rs"]
+pub mod yaw_corrector;
 
 use crate::device_scanner::DeviceScanner;
 use crate::gimbal;
