@@ -169,8 +169,8 @@ The corrector assumes the gimbal is at rest in the world between SETs,
 which is true for static mounts, parked vehicles, and pan-mode HOLD on
 moving vehicles. In actively-yawing flight with pan-mode PAN it can
 mistake vehicle motion for IMU drift; if that's your deployment,
-disable it via the future `gimbal.yaw_corrector_enabled = false`
-config knob (defaults to on; not yet exposed).
+disable it with `gimbal.yaw_corrector_enabled: false` in `turret.yaml`
+(defaults to on).
 
 #### Future hardware paths
 
@@ -226,9 +226,14 @@ ipc:
 
 mavlink:
   enabled: true
+  transport: udp
+  bind_addr: 127.0.0.1
   udp_port: 14550
   sysid: 1
   compid: 154
+
+gimbal:
+  yaw_corrector_enabled: true
 ```
 
 **Priority System**: MAVLink autopilot (highest) > GCS > Unix socket > CLI (lowest)

@@ -40,7 +40,7 @@
 //!   `PV - SP` error is genuine drift. In actively-yawing flight with
 //!   pan-mode PAN, the IMU also moves with the vehicle and the
 //!   "settled" assumption breaks. For that case, set
-//!   `gimbal.yaw_corrector_enabled = false` in YAML.
+//!   `gimbal.yaw_corrector_enabled: false` in YAML.
 //!
 //! ## Future hardware paths (not in scope for this code)
 //!

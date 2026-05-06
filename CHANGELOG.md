@@ -116,9 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drift back to the offset.
 - Default-on; assumes the gimbal is at rest in the world between SETs
   (true for static mounts, parked vehicles, and pan-mode HOLD). For
-  actively-yawing flight with pan-mode PAN, the future
-  `gimbal.yaw_corrector_enabled` config knob will toggle it (not
-  exposed yet — defer to first reported issue).
+  actively-yawing flight with pan-mode PAN, set
+  `gimbal.yaw_corrector_enabled: false` to disable it.
 
 ### Changed
 - **CLI is now a thin client over the daemon's IPC socket.** Each
