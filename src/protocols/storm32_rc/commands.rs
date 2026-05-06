@@ -9,7 +9,7 @@
 use super::driver::{GimbalAngles, Storm32Gimbal};
 use super::error::{Result, Storm32Error};
 use super::frame::{RCCommand, RCMessage};
-use tracing::{debug, warn};
+use tracing::debug;
 
 impl Storm32Gimbal {
     /// Set gimbal angles using `CMD_SETANGLE` (float precision).
@@ -78,27 +78,38 @@ impl Storm32Gimbal {
     }
 
     /// Refresh `current_status.pv` using `CMD_GETDATAFIELDS`.
+    ///
+    /// Errors from `send_rc_command` (I/O failure, no response, garbage
+    /// on the line) propagate to the caller. Earlier this method
+    /// swallowed those errors with a `warn!` and returned `Ok(())`,
+    /// which broke the daemon's hot-unplug detection: the attitude
+    /// poll loop counts only `Err` toward `consecutive_failures`, so a
+    /// silent serial bus stayed silent — `notify_lost` never fired,
+    /// the reconnect supervisor never woke, and downstream consumers
+    /// (IPC `status`, MAVLink `GIMBAL_DEVICE_ATTITUDE_STATUS`) kept
+    /// broadcasting the last cached `pv` as fresh attitude with no
+    /// `COMMS_ERROR` flag. The cache is left untouched on the error
+    /// path, so a `get_status()`-only consumer can still inspect the
+    /// last good reading after a failed refresh.
     pub fn update_status(&mut self) -> Result<()> {
         // Request IMU1 angles (0x0020 = LIVEDATA_IMU1ANGLES).
         let bitmask = 0x0020u16;
         let payload = RCMessage::create_get_data_fields_payload(bitmask);
         let message = RCMessage::new(RCCommand::GetDataFields, payload);
 
-        match self.send_rc_command(&message) {
-            Ok(response) => {
-                if response.is_empty() {
-                    debug!("GetDataFields command returned empty response (possibly unsupported)");
-                    return Ok(());
-                }
-                self.current_status.pv = parse_imu1_angles_payload(&response)?;
-                Ok(())
-            }
-            Err(e) => {
-                // Losing current angles isn't fatal — log and move on.
-                warn!("Could not update gimbal status: {}", e);
-                Ok(())
-            }
+        let response = self.send_rc_command(&message)?;
+        if response.is_empty() {
+            // The gimbal accepted the request but had nothing to
+            // report (firmware that doesn't implement GETDATAFIELDS,
+            // or a known-empty bitmask reply). Not a transport
+            // failure — leave the cached `pv` in place so an
+            // immediately-following `get_status()` returns the last
+            // good reading rather than zeros.
+            debug!("GetDataFields returned empty response (possibly unsupported)");
+            return Ok(());
         }
+        self.current_status.pv = parse_imu1_angles_payload(&response)?;
+        Ok(())
     }
 
     /// `CMD_SETPANMODE` — `mode` is the 0..=5 pan-mode byte from the
