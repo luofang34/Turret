@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **STorM32 read failures now surface to the daemon's poll loop.**
+  `Storm32Gimbal::update_status` was catching every `send_rc_command`
+  error (I/O failure, "no response received," garbage on the line),
+  logging a `warn!`, and returning `Ok(())`. The trait-impl
+  `get_attitude` then returned the cached `pv` from the previous
+  successful read as if it were fresh. This broke the daemon's
+  hot-unplug detection in three places at once:
+  the attitude poll loop counts only `Err` toward
+  `consecutive_failures`, so `notify_lost` never fired and the
+  reconnect supervisor never woke; the loop kept calling
+  `update_measured_angles(stale, stale, stale)` on every 250 ms tick;
+  and `GIMBAL_DEVICE_ATTITUDE_STATUS` broadcasts went out without the
+  `COMMS_ERROR` flag, so a GCS saw frozen attitude labeled healthy.
+  The yaw corrector also kept integrating against the stale `pv`,
+  slowly walking the calibration offset against a value that no
+  longer reflected reality. Now `update_status` propagates errors via
+  `?`; the cached `pv` is left untouched on failure so a downstream
+  `get_status()`-only consumer can still inspect the last good
+  reading. The empty-response branch (firmware that doesn't implement
+  GETDATAFIELDS) still returns `Ok(())` — that's a successful
+  exchange with nothing to update, not a transport failure.
 - **`MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE` honors the `-1 / -2 / -3 / 0`
   special-value semantics from the MAVLink common.xml spec.** The old
   `to_id_byte` helper clamped every negative param to `0` ("permanent
