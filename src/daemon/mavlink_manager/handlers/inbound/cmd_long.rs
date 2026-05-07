@@ -7,7 +7,7 @@
 //! `arbitrate → set_attitude → ack` flow is inlined per case rather
 //! than going through `dispatch_gimbal_command`.
 
-use super::common::{addressed_to_us, clamp_pry, yaw_to_vehicle_frame};
+use super::common::{addressed_to_us, axis_baseline, clamp_pry, yaw_to_vehicle_frame};
 use super::rate::{any_rate_active, apply_rate_increment};
 use crate::daemon::arbitrator::Outcome;
 use crate::daemon::mavlink_manager::handlers::build::{
@@ -168,17 +168,32 @@ async fn on_cmd_pitchyaw(
         }
     }
 
-    let pitch_in = if cmd.param1.is_nan() { 0.0 } else { cmd.param1 };
-    let yaw_in = if cmd.param2.is_nan() { 0.0 } else { cmd.param2 };
+    // NaN on a single axis = "ignore this axis" per the GMv2 spec, not
+    // "command 0°". Substitute the per-axis baseline (last commanded →
+    // last measured → 0). Roll has no parameter on this command at
+    // all, so it always uses the baseline — keeps an earlier
+    // `set roll=15` from being silently zeroed by a yaw-only
+    // DO_GIMBAL_MANAGER_PITCHYAW.
+    let (base_pitch, base_roll, base_yaw) = axis_baseline(ctx.state);
+    let pitch_in = if cmd.param1.is_nan() {
+        base_pitch
+    } else {
+        cmd.param1
+    };
+    let yaw_in = if cmd.param2.is_nan() {
+        base_yaw
+    } else {
+        cmd.param2
+    };
     let flags = flags_from_param5(cmd.param5);
     let yaw_in = yaw_to_vehicle_frame(yaw_in, flags, ctx, "DO_GIMBAL_MANAGER_PITCHYAW");
-    let (pitch, _roll, yaw) = clamp_pry(pitch_in, 0.0, yaw_in, &ctx.config.limits);
+    let (pitch, roll, yaw) = clamp_pry(pitch_in, base_roll, yaw_in, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
         CommandMode::Position,
         Some(yaw),
         Some(pitch),
-        Some(0.0),
+        Some(roll),
     );
 
     let ack = match ctx.arbitrator.arbitrate(command) {

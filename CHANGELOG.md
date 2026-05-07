@@ -70,6 +70,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abstraction.
 
 ### Fixed
+- **MAVLink `NaN = ignore this axis` is now honored on SET_PITCHYAW
+  and DO_GIMBAL_MANAGER_PITCHYAW.** Both handlers were collapsing a
+  NaN pitch / yaw to `0.0`, and both always sent `roll = 0.0` (those
+  messages have no roll field). A yaw-only command from a GCS
+  silently snapped pitch back to center; a pitch-only command snapped
+  yaw to center; any non-`SET_ATTITUDE` command snapped roll to
+  center. Per the GMv2 spec, NaN means "ignore this axis — keep it
+  where I last set it." New `axis_baseline` helper in
+  `inbound/common.rs` resolves a missing axis per-axis: last commanded
+  value first (the user's intent, immune to IMU noise and yaw drift
+  correction), then the most recent measured PV if any poll has
+  succeeded, then `0.0` as a final cold-boot fallback. Both handlers
+  now substitute the baseline for NaN angles and for the absent roll
+  axis. Four unit tests cover the resolution order (cold start,
+  measured-only fall-through, last-command preference per-axis,
+  command-only with no measurement).
 - **STorM32 read failures now surface to the daemon's poll loop.**
   `Storm32Gimbal::update_status` was catching every `send_rc_command`
   error (I/O failure, "no response received," garbage on the line),
