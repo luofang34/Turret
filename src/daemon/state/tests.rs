@@ -382,3 +382,59 @@ fn test_command_priority() {
     let last = manager.get_last_command().unwrap();
     assert_eq!(last.yaw, Some(10.0));
 }
+
+#[test]
+fn axis_baseline_zero_when_cold() {
+    // No last command, no successful measurement → all zeros.
+    let s = StateManager::new();
+    assert_eq!(s.axis_baseline(), (0.0, 0.0, 0.0));
+}
+
+#[test]
+fn axis_baseline_falls_through_to_measured_when_no_command() {
+    // Measurement landed but no command has been issued — every axis
+    // falls through to the measured PV. This is the "first partial
+    // command after boot" case: don't snap unmoved axes to zero, hold
+    // them where the IMU says they are.
+    let s = StateManager::new();
+    s.update_measured_angles(20.0, 10.0, 30.0); // (yaw, pitch, roll)
+    assert_eq!(s.axis_baseline(), (10.0, 30.0, 20.0));
+}
+
+#[test]
+fn axis_baseline_prefers_last_command_per_axis() {
+    // last_command has only pitch + yaw; roll is None. Even with a
+    // measurement on file, roll falls through to measured.roll and
+    // pitch/yaw use the commanded values, not the measured PV — IMU
+    // noise and yaw drift correction don't perturb an axis-baseline
+    // read.
+    let s = StateManager::new();
+    s.update_measured_angles(20.5, 10.5, 30.5); // PV slightly drifted
+    let cmd = GimbalCommand::new(
+        ControlSource::Cli,
+        CommandMode::Position,
+        Some(20.0), // yaw
+        Some(10.0), // pitch
+        None,       // roll: not commanded
+    );
+    assert!(s.set_command(cmd));
+    assert_eq!(s.axis_baseline(), (10.0, 30.5, 20.0));
+}
+
+#[test]
+fn axis_baseline_command_only_no_measured() {
+    // Command issued before any successful poll — the measured branch
+    // is gated by `measured_at.is_some()` so axes the command didn't
+    // touch fall to 0, not to the Default::default() zeros that look
+    // identical at runtime but mean "no measurement yet."
+    let s = StateManager::new();
+    let cmd = GimbalCommand::new(
+        ControlSource::Cli,
+        CommandMode::Position,
+        None,       // yaw: not commanded
+        Some(10.0), // pitch
+        None,       // roll: not commanded
+    );
+    assert!(s.set_command(cmd));
+    assert_eq!(s.axis_baseline(), (10.0, 0.0, 0.0));
+}

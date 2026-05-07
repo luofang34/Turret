@@ -7,7 +7,7 @@
 //! `arbitrate → set_attitude → ack` flow is inlined per case rather
 //! than going through `dispatch_gimbal_command`.
 
-use super::common::{addressed_to_us, axis_baseline, clamp_pry, yaw_to_vehicle_frame};
+use super::common::{addressed_to_us, clamp_pry, yaw_to_vehicle_frame};
 use super::rate::{any_rate_active, apply_rate_increment};
 use crate::daemon::arbitrator::Outcome;
 use crate::daemon::mavlink_manager::handlers::build::{
@@ -174,7 +174,7 @@ async fn on_cmd_pitchyaw(
     // all, so it always uses the baseline — keeps an earlier
     // `set roll=15` from being silently zeroed by a yaw-only
     // DO_GIMBAL_MANAGER_PITCHYAW.
-    let (base_pitch, base_roll, base_yaw) = axis_baseline(ctx.state);
+    let (base_pitch, base_roll, base_yaw) = ctx.state.axis_baseline();
     let pitch_in = if cmd.param1.is_nan() {
         base_pitch
     } else {

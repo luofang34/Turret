@@ -57,6 +57,15 @@ impl Arbitrator {
         fields(source = ?command.source, mode = ?command.mode)
     )]
     pub fn arbitrate(&self, command: GimbalCommand) -> Outcome {
+        // Capture the per-axis baseline *before* set_command overwrites
+        // last_command with the (potentially partial) new one. A `None`
+        // axis on the incoming command means "leave this axis where I
+        // last set it" — resolved against the *previous* last_command,
+        // not the post-update view that would see our own None.
+        // See `StateManager::axis_baseline` for the resolution order
+        // (last_command → measured → 0).
+        let (base_pitch, base_roll, base_yaw) = self.state_manager.axis_baseline();
+
         // Try to set command (checks priority + rate-limit).
         if !self.state_manager.set_command(command.clone()) {
             debug!(
@@ -74,9 +83,14 @@ impl Arbitrator {
 
         match command.mode {
             CommandMode::Position => Outcome::Execute {
-                pitch: command.pitch.unwrap_or(0.0),
-                roll: command.roll.unwrap_or(0.0),
-                yaw: command.yaw.unwrap_or(0.0),
+                // None on an axis = "leave alone" per the GimbalCommand
+                // contract. Resolve against the captured baseline rather
+                // than collapsing to 0.0 — a partial command (e.g. IPC
+                // `pitch 10` or a yaw-only MAVLink SET_PITCHYAW) must
+                // not silently snap unmentioned axes to center.
+                pitch: command.pitch.unwrap_or(base_pitch),
+                roll: command.roll.unwrap_or(base_roll),
+                yaw: command.yaw.unwrap_or(base_yaw),
             },
             CommandMode::Rate => {
                 // Rate path is converted to position at the inbound layer
@@ -186,6 +200,77 @@ mod tests {
             Some(0.0),
         );
         assert_eq!(arbitrator.arbitrate(cmd), Outcome::Rejected);
+    }
+
+    #[test]
+    fn none_axis_resolves_to_baseline_not_zero() {
+        // A partial command (only some axes commanded) must keep the
+        // omitted axes at their last commanded value, not snap them to
+        // 0°. Regression for the silent `unwrap_or(0.0)` that used to
+        // sit in the Position branch.
+        let state_manager = StateManager::new();
+        let arbitrator = Arbitrator::new(state_manager.clone());
+
+        // Prime last_command with a full triple at higher priority than
+        // the partial command below — otherwise the partial would lose
+        // arbitration and never reach the Position branch.
+        let prime = GimbalCommand::new(
+            ControlSource::Mavlink(1),
+            CommandMode::Position,
+            Some(20.0), // yaw
+            Some(10.0), // pitch
+            Some(15.0), // roll
+        );
+        assert!(matches!(
+            arbitrator.arbitrate(prime),
+            Outcome::Execute { .. }
+        ));
+
+        // Same source, a yaw-only follow-up. None on pitch/roll must
+        // resolve to the previously commanded 10 / 15, not 0.
+        let yaw_only = GimbalCommand::new(
+            ControlSource::Mavlink(1),
+            CommandMode::Position,
+            Some(30.0), // yaw — changed
+            None,       // pitch — leave alone
+            None,       // roll — leave alone
+        );
+        match arbitrator.arbitrate(yaw_only) {
+            Outcome::Execute { pitch, roll, yaw } => {
+                assert_eq!(yaw, 30.0);
+                assert_eq!(pitch, 10.0, "pitch must preserve baseline, not snap to 0");
+                assert_eq!(roll, 15.0, "roll must preserve baseline, not snap to 0");
+            }
+            other => panic!("expected Execute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn none_axis_at_cold_boot_falls_back_to_zero() {
+        // No prior command and no measurement yet — None still has to
+        // resolve to *something* for the gimbal call. The final-fallback
+        // 0.0 from `axis_baseline` is the right answer here (cold boot,
+        // first-ever command, nothing to preserve). Documents the
+        // boundary so a future refactor doesn't accidentally start
+        // panicking on unresolved None.
+        let state_manager = StateManager::new();
+        let arbitrator = Arbitrator::new(state_manager);
+
+        let cmd = GimbalCommand::new(
+            ControlSource::Cli,
+            CommandMode::Position,
+            Some(15.0), // yaw — only this axis commanded
+            None,
+            None,
+        );
+        match arbitrator.arbitrate(cmd) {
+            Outcome::Execute { pitch, roll, yaw } => {
+                assert_eq!(yaw, 15.0);
+                assert_eq!(pitch, 0.0);
+                assert_eq!(roll, 0.0);
+            }
+            other => panic!("expected Execute, got {other:?}"),
+        }
     }
 
     #[test]
