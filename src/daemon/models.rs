@@ -81,18 +81,22 @@ impl ControlSource {
     }
 }
 
-/// What the command body's three axis values mean. Today only
-/// [`CommandMode::Position`] is fully wired through — see the
-/// `Arbitrator::process_command` `Rate`/`Manual` branches for the gaps.
+/// What the command body's three axis values mean. Inbound handlers
+/// always normalize to `Position` before reaching the arbitrator —
+/// rate-stream commands are integrated into a position update by
+/// `inbound::rate::apply_rate_increment`, and `SET_MANUAL_CONTROL`'s
+/// normalized values are scaled to absolute degrees by `on_set_manual`
+/// — so `Position` is the only mode the gimbal ever sees in practice.
+/// `Rate` is kept as a routing-bug sentinel that the arbitrator
+/// rejects with a warn.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum CommandMode {
     /// Absolute angle in degrees per axis.
     Position,
-    /// Angular velocity in degrees per second.
+    /// Angular velocity in degrees per second. Production paths convert
+    /// to `Position` at the inbound layer; a bare `Rate` reaching the
+    /// arbitrator is a routing bug and gets rejected.
     Rate,
-    /// Normalized stick-like input on `[-1.0, 1.0]` — handlers scale this
-    /// to ±90° before clamping to configured device limits.
-    Manual,
 }
 
 /// MAVLink primary / secondary control ownership.

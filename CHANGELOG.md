@@ -70,6 +70,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abstraction.
 
 ### Fixed
+- **`GIMBAL_MANAGER_SET_MANUAL_CONTROL` position-angle path now
+  actually moves the gimbal.** `on_set_manual` was building a
+  `GimbalCommand` with `CommandMode::Manual`, but the arbitrator's
+  `Manual` branch was a stub that warned and rejected every such
+  command — so a SET_MANUAL_CONTROL with non-NaN angles silently
+  never reached the device. After PR #57 + PR #63, the position-angle
+  values arrive at the arbitrator already normalized, NaN-resolved
+  via `axis_baseline`, frame-translated, and clamped to device limits
+  — i.e. they're plain absolute degrees per axis, indistinguishable
+  in shape from a SET_PITCHYAW or SET_ATTITUDE position command.
+  Switched `on_set_manual` to `CommandMode::Position` and removed the
+  dead `CommandMode::Manual` enum variant + arbitrator branch + test
+  (the project rules call out unused variants as speculative future
+  work). `CommandMode::Rate` stays as a routing-bug sentinel — bare
+  `Rate` reaching the arbitrator is still a programmer error.
 - **MAVLink `gimbal_device_id` is now enforced on inbound commands.**
   The manager advertises itself at `gimbal_device_id = config.compid`
   in `GIMBAL_MANAGER_STATUS` and `GIMBAL_MANAGER_INFORMATION`, but the
