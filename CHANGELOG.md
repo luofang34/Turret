@@ -70,6 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abstraction.
 
 ### Fixed
+- **`SET_MANUAL_CONTROL` honors the same `NaN = ignore this axis`
+  semantics as the other set messages.** The position-angle path was
+  collapsing a NaN pitch / yaw to `0.0` and always sending `roll = 0.0`
+  (the message has no roll field), so a yaw-only joystick command
+  snapped pitch + roll back to center on every tick. Now uses the same
+  `axis_baseline` helper as SET_PITCHYAW / DO_GIMBAL_MANAGER_PITCHYAW
+  (last commanded → last measured → 0). Brings the third position-
+  command path in line with the spec; finishes the spec-correctness
+  pass started in PR #62.
 - **MAVLink `NaN = ignore this axis` is now honored on SET_PITCHYAW
   and DO_GIMBAL_MANAGER_PITCHYAW.** Both handlers were collapsing a
   NaN pitch / yaw to `0.0`, and both always sent `roll = 0.0` (those

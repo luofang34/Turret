@@ -206,22 +206,30 @@ pub(super) async fn on_set_manual(
 
     // Manual control uses normalized values (-1.0..=1.0). Scale to ±90°
     // then clamp to the configured device limits in case those are
-    // tighter than ±90°. NaN on a single axis collapses to 0 (center)
-    // — same convention as SET_PITCHYAW.
+    // tighter than ±90°. NaN on a single axis = "ignore this axis" per
+    // the GMv2 spec, not "command 0°" — substitute the per-axis baseline
+    // (last commanded → last measured → 0) the same way SET_PITCHYAW
+    // does. SET_MANUAL_CONTROL has no roll field so roll always uses
+    // the baseline.
+    let (base_pitch, base_roll, base_yaw) = axis_baseline(ctx.state);
     let pitch_deg = if m.pitch.is_nan() {
-        0.0
+        base_pitch
     } else {
         m.pitch * 90.0
     };
-    let yaw_deg = if m.yaw.is_nan() { 0.0 } else { m.yaw * 90.0 };
+    let yaw_deg = if m.yaw.is_nan() {
+        base_yaw
+    } else {
+        m.yaw * 90.0
+    };
     let yaw_deg = yaw_to_vehicle_frame(yaw_deg, m.flags, ctx, "SET_MANUAL_CONTROL");
-    let (pitch, _roll, yaw) = clamp_pry(pitch_deg, 0.0, yaw_deg, &ctx.config.limits);
+    let (pitch, roll, yaw) = clamp_pry(pitch_deg, base_roll, yaw_deg, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
         CommandMode::Manual,
         Some(yaw),
         Some(pitch),
-        Some(0.0),
+        Some(roll),
     );
     dispatch_gimbal_command(command, ctx, "SET_MANUAL_CONTROL").await;
 }
