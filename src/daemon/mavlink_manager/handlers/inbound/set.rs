@@ -7,7 +7,9 @@
 //! NaN-position commands route to [`super::rate::apply_rate_increment`]
 //! when at least one rate axis is active.
 
-use super::common::{addressed_to_us, clamp_pry, dispatch_gimbal_command, yaw_to_vehicle_frame};
+use super::common::{
+    addressed_to_us, axis_baseline, clamp_pry, dispatch_gimbal_command, yaw_to_vehicle_frame,
+};
 use super::rate::{any_rate_active, apply_rate_increment};
 use crate::daemon::mavlink_manager::math::quaternion_wxyz_to_euler_deg;
 use crate::daemon::mavlink_manager::RxCtx;
@@ -121,24 +123,30 @@ pub(super) async fn on_set_pitchyaw(
         return;
     }
 
+    // NaN on a single axis = "ignore this axis" per the GMv2 spec, not
+    // "command 0°". Substitute the per-axis baseline (last commanded →
+    // last measured → 0). Roll has no field on this message at all, so
+    // it always uses the baseline — keeps an earlier `set roll=15` from
+    // being silently zeroed by a yaw-only SET_PITCHYAW.
+    let (base_pitch, base_roll, base_yaw) = axis_baseline(ctx.state);
     let pitch_deg = if m.pitch.is_nan() {
-        0.0
+        base_pitch
     } else {
         m.pitch.to_degrees()
     };
     let yaw_deg = if m.yaw.is_nan() {
-        0.0
+        base_yaw
     } else {
         m.yaw.to_degrees()
     };
     let yaw_deg = yaw_to_vehicle_frame(yaw_deg, m.flags, ctx, "SET_PITCHYAW");
-    let (pitch, _roll, yaw) = clamp_pry(pitch_deg, 0.0, yaw_deg, &ctx.config.limits);
+    let (pitch, roll, yaw) = clamp_pry(pitch_deg, base_roll, yaw_deg, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
         CommandMode::Position,
         Some(yaw),
         Some(pitch),
-        Some(0.0),
+        Some(roll),
     );
     dispatch_gimbal_command(command, ctx, "SET_PITCHYAW").await;
 }
