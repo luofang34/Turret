@@ -97,7 +97,7 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_loop(
     gimbal: GimbalHandle,
     start_time: Instant,
     notify_lost: Arc<Notify>,
-    corrector: YawCorrector,
+    corrector: Option<YawCorrector>,
 ) {
     /// Number of consecutive poll failures (~250 ms each) before we declare
     /// the device gone and ask the reconnect task to take over. 8 ticks =
@@ -179,13 +179,18 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_loop(
         // drift and an `α`-weighted slice of it is added to the
         // calibration offset. See `daemon::yaw_corrector` for the
         // math + non-goals. No-op until at least one `set` has gone
-        // through the arbitrator.
+        // through the arbitrator. Skipped entirely when the operator
+        // has set `gimbal.yaw_corrector_enabled: false` in the YAML
+        // (typical for actively-yawing flight in pan-mode PAN, where
+        // "gimbal at rest in the world between SETs" doesn't hold).
         let last_command = state_manager.get_last_command();
         let last_sp_yaw = last_command.as_ref().and_then(|c| c.yaw);
         let time_since_set = last_command
             .as_ref()
             .and_then(|c| c.timestamp.elapsed().ok());
-        if let Some(step) = corrector.step(attitude.yaw, last_sp_yaw, time_since_set) {
+        if let Some(step) =
+            corrector.and_then(|c| c.step(attitude.yaw, last_sp_yaw, time_since_set))
+        {
             let new_offset = gimbal.yaw_offset_deg() + step.correction_deg;
             gimbal.set_yaw_offset_deg(new_offset);
             // Throttled persistence — disk write only when the offset

@@ -105,6 +105,11 @@ pub struct MavlinkManager {
     /// Set by the attitude poll loop after `FAILURE_THRESHOLD` consecutive
     /// readback errors. The daemon-level reconnect task awaits on this.
     notify_lost: Arc<Notify>,
+    /// Whether to spawn the continuous yaw drift corrector inside the
+    /// attitude loop. Sourced from `gimbal.yaw_corrector_enabled` in
+    /// the daemon YAML; default-on. When `false`, the loop runs without
+    /// the corrector (poll + broadcast only).
+    yaw_corrector_enabled: bool,
 }
 
 impl MavlinkManager {
@@ -112,10 +117,13 @@ impl MavlinkManager {
     /// `Notify` that the attitude poll loop pings when consecutive read
     /// failures cross the loop's failure threshold; the daemon-level
     /// `reconnect_task` drives recovery from there.
+    /// `yaw_corrector_enabled` toggles the continuous yaw-drift
+    /// correction loop inside `attitude_loop`.
     pub fn new(
         state_manager: StateManager,
         gimbal: GimbalHandle,
         notify_lost: Arc<Notify>,
+        yaw_corrector_enabled: bool,
     ) -> Self {
         let arbitrator = Arc::new(Arbitrator::new(state_manager.clone()));
 
@@ -127,6 +135,7 @@ impl MavlinkManager {
             seq: Arc::new(AtomicU8::new(0)),
             start_time: Instant::now(),
             notify_lost,
+            yaw_corrector_enabled,
         }
     }
 
@@ -187,12 +196,15 @@ impl MavlinkManager {
             let gimbal = self.gimbal.clone();
             let start_time = self.start_time;
             let notify_lost = self.notify_lost.clone();
-            // Default-on yaw drift corrector with mount_yaw_deg=0
-            // (gimbal-forward-equals-vehicle-nose). When a future
-            // `gimbal.mount_yaw_deg` config knob lands, plumb it
-            // through here. The corrector itself is a no-op until at
-            // least one `set` has gone through the arbitrator.
-            let corrector = super::yaw_corrector::YawCorrector::new(0.0);
+            // Yaw drift corrector with mount_yaw_deg=0 (gimbal-forward-
+            // equals-vehicle-nose). `None` when the operator disables it
+            // via `gimbal.yaw_corrector_enabled: false`. When a future
+            // `gimbal.mount_yaw_deg` config knob lands, plumb it through
+            // here. The corrector is a no-op until at least one `set`
+            // has gone through the arbitrator.
+            let corrector = self
+                .yaw_corrector_enabled
+                .then(|| super::yaw_corrector::YawCorrector::new(0.0));
             tokio::spawn(async move {
                 handlers::attitude_loop(
                     socket,

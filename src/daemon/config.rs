@@ -36,6 +36,43 @@ pub struct DaemonConfig {
     /// Command arbitration tuning (priority + per-source rate limit).
     #[serde(default)]
     pub arbitrator: ArbitratorConfig,
+    /// Gimbal-physical settings (corrector toggles, future mount-offset).
+    #[serde(default)]
+    pub gimbal: GimbalConfig,
+}
+
+/// Gimbal-physical / calibration tuning.
+///
+/// Currently a single toggle for the continuous yaw drift corrector. As
+/// more hardware-side knobs land (mount yaw offset, calibration sweep
+/// limits, etc.) they accrete here so `mavlink` and `arbitrator` stay
+/// purely about their own concerns.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct GimbalConfig {
+    /// Continuous yaw drift corrector ("self-erecting gyro"). When
+    /// enabled (the default), the attitude poll loop nudges the
+    /// calibration offset toward the most-recent SP once the gimbal
+    /// has been settled there for ≥ 2 s. Disable for actively-yawing
+    /// flight with pan-mode PAN, where the assumption "the gimbal is
+    /// at rest in the world between SETs" no longer holds and the
+    /// corrector would slowly walk the calibration off.
+    #[serde(default = "default_yaw_corrector_enabled")]
+    pub yaw_corrector_enabled: bool,
+}
+
+/// Yaw-corrector default = enabled. Pulled out as a free function so the
+/// `#[serde(default = "...")]` attribute on the field can reference it
+/// (you can't put a literal `true` in `#[serde(default)]` directly).
+fn default_yaw_corrector_enabled() -> bool {
+    true
+}
+
+impl Default for GimbalConfig {
+    fn default() -> Self {
+        Self {
+            yaw_corrector_enabled: default_yaw_corrector_enabled(),
+        }
+    }
 }
 
 /// Command arbitrator tuning.
@@ -174,6 +211,7 @@ impl Default for DaemonConfig {
                 level: "info".to_string(),
             },
             arbitrator: ArbitratorConfig::default(),
+            gimbal: GimbalConfig::default(),
         }
     }
 }
@@ -202,5 +240,64 @@ impl DaemonConfig {
                 Self::default()
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// Minimal YAML used by the corrector-knob tests — contains only the
+    /// fields the parser actually requires (no `#[serde(default)]` on
+    /// them), so we can exercise the `gimbal` section in isolation.
+    fn yaml_without_gimbal_section() -> &'static str {
+        r#"
+device:
+  path: auto
+ipc:
+  socket_path: /tmp/turret.sock
+mavlink:
+  enabled: true
+  udp_port: 14550
+  sysid: 1
+  compid: 154
+logging:
+  level: info
+"#
+    }
+
+    #[test]
+    fn yaw_corrector_enabled_defaults_to_true_when_section_omitted() {
+        // Operators upgrading from a pre-knob YAML must keep the
+        // existing default-on behavior — no surprise disable.
+        let cfg: DaemonConfig = serde_yaml_ng::from_str(yaml_without_gimbal_section()).unwrap();
+        assert!(cfg.gimbal.yaw_corrector_enabled);
+    }
+
+    #[test]
+    fn yaw_corrector_enabled_defaults_to_true_when_section_empty() {
+        // A `gimbal: {}` section parses cleanly and inherits the
+        // default — covers the case where an operator added the section
+        // header for a future field but didn't set the corrector flag.
+        let mut yaml = String::from(yaml_without_gimbal_section());
+        yaml.push_str("gimbal: {}\n");
+        let cfg: DaemonConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert!(cfg.gimbal.yaw_corrector_enabled);
+    }
+
+    #[test]
+    fn yaw_corrector_enabled_can_be_explicitly_disabled() {
+        let mut yaml = String::from(yaml_without_gimbal_section());
+        yaml.push_str("gimbal:\n  yaw_corrector_enabled: false\n");
+        let cfg: DaemonConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert!(!cfg.gimbal.yaw_corrector_enabled);
+    }
+
+    #[test]
+    fn daemon_config_default_enables_corrector() {
+        // The non-YAML default path (used by `load_or_default` when the
+        // file is missing) must agree with the YAML-default behavior.
+        assert!(DaemonConfig::default().gimbal.yaw_corrector_enabled);
     }
 }
