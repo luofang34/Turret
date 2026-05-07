@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-07
+
 ### Added
 - **`GIMBAL_MANAGER_SET_MANUAL_CONTROL` now honors the rate path and
   earth-frame yaw flag.** The handler used to treat the message purely
