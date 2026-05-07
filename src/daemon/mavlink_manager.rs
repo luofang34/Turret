@@ -21,7 +21,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
 /// How long a peer may go silent before its entry in the peer map is
@@ -102,29 +102,15 @@ pub struct MavlinkManager {
     seq: Arc<AtomicU8>,
     /// Daemon start time for `time_boot_ms` computation.
     start_time: Instant,
-    /// Set by the attitude poll loop after `FAILURE_THRESHOLD` consecutive
-    /// readback errors. The daemon-level reconnect task awaits on this.
-    notify_lost: Arc<Notify>,
-    /// Whether to spawn the continuous yaw drift corrector inside the
-    /// attitude loop. Sourced from `gimbal.yaw_corrector_enabled` in
-    /// the daemon YAML; default-on. When `false`, the loop runs without
-    /// the corrector (poll + broadcast only).
-    yaw_corrector_enabled: bool,
 }
 
 impl MavlinkManager {
-    /// Build a MAVLink Gimbal Manager. `notify_lost` is the shared
-    /// `Notify` that the attitude poll loop pings when consecutive read
-    /// failures cross the loop's failure threshold; the daemon-level
-    /// `reconnect_task` drives recovery from there.
-    /// `yaw_corrector_enabled` toggles the continuous yaw-drift
-    /// correction loop inside `attitude_loop`.
-    pub fn new(
-        state_manager: StateManager,
-        gimbal: GimbalHandle,
-        notify_lost: Arc<Notify>,
-        yaw_corrector_enabled: bool,
-    ) -> Self {
+    /// Build a MAVLink Gimbal Manager. The hardware attitude poll +
+    /// reconnect signaling + yaw corrector live in the daemon-level
+    /// [`crate::daemon::attitude::attitude_poll_loop`] now (always-on,
+    /// protocol-agnostic); the manager subscribes to attitude ticks
+    /// through the broadcast `Receiver` passed to [`Self::start`].
+    pub fn new(state_manager: StateManager, gimbal: GimbalHandle) -> Self {
         let arbitrator = Arc::new(Arbitrator::new(state_manager.clone()));
 
         Self {
@@ -134,21 +120,30 @@ impl MavlinkManager {
             peers: Arc::new(Mutex::new(HashMap::new())),
             seq: Arc::new(AtomicU8::new(0)),
             start_time: Instant::now(),
-            notify_lost,
-            yaw_corrector_enabled,
         }
     }
 
-    /// Start the MAVLink manager.
-    pub async fn start(self, config: MavlinkConfig) -> crate::error::Result<()> {
+    /// Start the MAVLink manager. `attitude_rx` is the manager's
+    /// subscription to the daemon's attitude poll broadcast — every
+    /// successful poll fires one [`AttitudeTick`](crate::daemon::attitude::AttitudeTick)
+    /// the broadcast loop consumes to send `GIMBAL_DEVICE_ATTITUDE_STATUS`.
+    pub async fn start(
+        self,
+        config: MavlinkConfig,
+        attitude_rx: tokio::sync::broadcast::Receiver<crate::daemon::attitude::AttitudeTick>,
+    ) -> crate::error::Result<()> {
         match config.transport {
-            Transport::Udp => self.start_udp(config).await,
+            Transport::Udp => self.start_udp(config, attitude_rx).await,
         }
     }
 
     /// Start UDP MAVLink transport: bind socket, spawn broadcast loops,
     /// then run the main receive loop.
-    async fn start_udp(self, config: MavlinkConfig) -> crate::error::Result<()> {
+    async fn start_udp(
+        self,
+        config: MavlinkConfig,
+        attitude_rx: tokio::sync::broadcast::Receiver<crate::daemon::attitude::AttitudeTick>,
+    ) -> crate::error::Result<()> {
         let bind_addr = SocketAddr::new(config.bind_addr, config.udp_port);
         info!("Starting MAVLink manager on UDP {}", bind_addr);
 
@@ -181,41 +176,28 @@ impl MavlinkManager {
             });
         }
 
-        // 4 Hz attitude poll + GIMBAL_DEVICE_ATTITUDE_STATUS broadcast.
-        // This is the only writer of measured state.{yaw,pitch,roll} — see
-        // `Arbitrator::process_command` for why commanded values stay in
-        // `last_command` instead of overwriting the measured fields. After
-        // `FAILURE_THRESHOLD` consecutive errors it pings `notify_lost` to
-        // hand recovery off to the daemon-level reconnect task.
+        // GIMBAL_DEVICE_ATTITUDE_STATUS broadcast — subscribes to the
+        // daemon's attitude broadcast channel and emits one MAVLink
+        // frame per successful poll. The poll itself, the failure
+        // counter, the reconnect signaling, and the yaw drift
+        // corrector all live in `daemon::attitude::attitude_poll_loop`,
+        // which runs unconditionally so an `mavlink.enabled: false`
+        // deployment still gets fresh state and a working hot-unplug
+        // path.
         {
             let socket = socket.clone();
             let peers = self.peers.clone();
             let seq = self.seq.clone();
-            let state = self.state_manager.clone();
             let config = config.clone();
-            let gimbal = self.gimbal.clone();
             let start_time = self.start_time;
-            let notify_lost = self.notify_lost.clone();
-            // Yaw drift corrector with mount_yaw_deg=0 (gimbal-forward-
-            // equals-vehicle-nose). `None` when the operator disables it
-            // via `gimbal.yaw_corrector_enabled: false`. When a future
-            // `gimbal.mount_yaw_deg` config knob lands, plumb it through
-            // here. The corrector is a no-op until at least one `set`
-            // has gone through the arbitrator.
-            let corrector = self
-                .yaw_corrector_enabled
-                .then(|| super::yaw_corrector::YawCorrector::new(0.0));
             tokio::spawn(async move {
-                handlers::attitude_loop(
+                handlers::attitude_broadcast_loop(
                     socket,
                     peers,
                     seq,
-                    state,
                     config,
-                    gimbal,
                     start_time,
-                    notify_lost,
-                    corrector,
+                    attitude_rx,
                 )
                 .await;
             });

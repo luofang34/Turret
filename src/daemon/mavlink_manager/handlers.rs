@@ -18,4 +18,4 @@ mod inbound;
 mod loops;
 
 pub(super) use inbound::handle_mavlink_message;
-pub(super) use loops::{attitude_loop, heartbeat_loop, publish_status_loop};
+pub(super) use loops::{attitude_broadcast_loop, heartbeat_loop, publish_status_loop};

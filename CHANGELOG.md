@@ -70,6 +70,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abstraction.
 
 ### Fixed
+- **Hardware attitude polling now runs unconditionally instead of
+  hiding inside `MavlinkManager`.** With `mavlink.enabled: false` the
+  attitude poll loop never spawned, so `state.measured_at` stayed
+  `None` forever, IPC `status` returned the `Default::default()` zero
+  attitude as if it were fresh, and `notify_lost` was never signaled
+  — the daemon-level reconnect supervisor sat dormant through any
+  hot-unplug. New `daemon::attitude` module owns the poll cadence,
+  state writes, failure counter / reconnect signaling, and the yaw
+  drift corrector. MAVLink (and any future protocol front-end)
+  subscribes to an `AttitudeTick` broadcast channel and emits its
+  protocol-specific frame from the tick. `MavlinkManager::new` no
+  longer takes `notify_lost` or `yaw_corrector_enabled` (those move
+  to the poll loop's daemon-level construction site); the broadcast
+  loop translates `tick.link_recently_failed` into the existing
+  `COMMS_ERROR` flag without owning the failure-tracking state. The
+  `mavlink_smoke` integration test grew an explicit poll-loop spawn
+  alongside the manager — same coverage, new wiring.
 - **`GIMBAL_MANAGER_SET_MANUAL_CONTROL` position-angle path now
   actually moves the gimbal.** `on_set_manual` was building a
   `GimbalCommand` with `CommandMode::Manual`, but the arbitrator's
