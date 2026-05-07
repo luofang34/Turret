@@ -7,7 +7,10 @@
 //! `arbitrate → set_attitude → ack` flow is inlined per case rather
 //! than going through `dispatch_gimbal_command`.
 
-use super::common::{addressed_to_us, clamp_pry, yaw_to_vehicle_frame};
+use super::common::{
+    addressed_to_this_device, addressed_to_us, clamp_pry, gimbal_device_id_from_param7,
+    yaw_to_vehicle_frame,
+};
 use super::rate::{any_rate_active, apply_rate_increment};
 use crate::daemon::arbitrator::Outcome;
 use crate::daemon::mavlink_manager::handlers::build::{
@@ -126,6 +129,27 @@ async fn on_cmd_pitchyaw(
     cmd: COMMAND_LONG_DATA,
     ctx: &RxCtx<'_>,
 ) {
+    // param7 carries the gimbal_device_id per the GMv2 spec. Drop
+    // silently if it's malformed or addressed to a different gimbal —
+    // the ACK obligation only applies when the command is *for us*.
+    let device_id = match gimbal_device_id_from_param7(cmd.param7) {
+        Some(id) => id,
+        None => {
+            debug!(
+                "Ignoring MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW with malformed param7={}",
+                cmd.param7
+            );
+            return;
+        }
+    };
+    if !addressed_to_this_device(device_id, ctx.config.compid) {
+        debug!(
+            "Ignoring MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW for gimbal_device_id={} (we are {})",
+            device_id, ctx.config.compid
+        );
+        return;
+    }
+
     if !ctx.state.is_primary_allowed(sender_sysid, sender_compid) {
         warn!(
             "Rejecting MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW from non-primary ({},{})",
@@ -318,6 +342,28 @@ async fn on_cmd_configure(
     cmd: COMMAND_LONG_DATA,
     ctx: &RxCtx<'_>,
 ) {
+    // param7 carries gimbal_device_id. Drop silently if it's malformed
+    // or addressed to a different gimbal — same shape as PITCHYAW.
+    // Otherwise a CONFIGURE meant to claim primary control of a peer
+    // gimbal would silently rewrite this manager's ownership too.
+    let device_id = match gimbal_device_id_from_param7(cmd.param7) {
+        Some(id) => id,
+        None => {
+            debug!(
+                "Ignoring MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE with malformed param7={}",
+                cmd.param7
+            );
+            return;
+        }
+    };
+    if !addressed_to_this_device(device_id, ctx.config.compid) {
+        debug!(
+            "Ignoring MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE for gimbal_device_id={} (we are {})",
+            device_id, ctx.config.compid
+        );
+        return;
+    }
+
     let prev = ctx.state.get_primary_control();
     let pc = PrimaryControl {
         primary_sysid: ConfigureField::decode(cmd.param1).apply(prev.primary_sysid, sender_sysid),

@@ -70,6 +70,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abstraction.
 
 ### Fixed
+- **MAVLink `gimbal_device_id` is now enforced on inbound commands.**
+  The manager advertises itself at `gimbal_device_id = config.compid`
+  in `GIMBAL_MANAGER_STATUS` and `GIMBAL_MANAGER_INFORMATION`, but the
+  inbound handlers ignored the per-message field — a `SET_PITCHYAW`
+  (or any other manager command) addressed to a different gimbal in
+  the same swarm would still move this one. New `addressed_to_this_device`
+  predicate in `inbound/common.rs` accepts only `0` (broadcast per spec)
+  or our own compid; everything else (including the spec's `1..=6`
+  "non-MAVLink gimbal" range) drops silently. Wired into all three
+  SET_* handlers (`SET_ATTITUDE`, `SET_PITCHYAW`, `SET_MANUAL_CONTROL`)
+  via `m.gimbal_device_id`, and into `MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW`
+  + `MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE` via the new
+  `gimbal_device_id_from_param7` decoder (NaN / negative / out-of-range
+  → "not for us" so a malformed GCS can't accidentally hit this
+  gimbal). Drops are silent — no `COMMAND_ACK` for COMMAND_LONG, since
+  the ACK obligation only applies when the command is actually for us.
+  Four new unit tests cover the predicate and the param7 decoder
+  (broadcast, exact match, peer compids, the `1..=6` range, NaN, ±∞,
+  negatives, overflow).
 - **Arbitrator now honors `None` = "leave this axis alone" instead of
   silently substituting `0.0`.** `GimbalCommand`'s axes are
   `Option<f32>` with a documented "`None` means leave alone" contract,

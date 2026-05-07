@@ -7,7 +7,10 @@
 //! NaN-position commands route to [`super::rate::apply_rate_increment`]
 //! when at least one rate axis is active.
 
-use super::common::{addressed_to_us, clamp_pry, dispatch_gimbal_command, yaw_to_vehicle_frame};
+use super::common::{
+    addressed_to_this_device, addressed_to_us, clamp_pry, dispatch_gimbal_command,
+    yaw_to_vehicle_frame,
+};
 use super::rate::{any_rate_active, apply_rate_increment};
 use crate::daemon::mavlink_manager::math::quaternion_wxyz_to_euler_deg;
 use crate::daemon::mavlink_manager::RxCtx;
@@ -27,6 +30,13 @@ pub(super) async fn on_set_attitude(
         ctx.config.sysid,
         ctx.config.compid,
     ) {
+        return;
+    }
+    if !addressed_to_this_device(m.gimbal_device_id, ctx.config.compid) {
+        debug!(
+            "Ignoring GIMBAL_MANAGER_SET_ATTITUDE for gimbal_device_id={} (we are {})",
+            m.gimbal_device_id, ctx.config.compid
+        );
         return;
     }
     if !ctx.state.is_primary_allowed(sender_sysid, sender_compid) {
@@ -88,6 +98,13 @@ pub(super) async fn on_set_pitchyaw(
         ctx.config.sysid,
         ctx.config.compid,
     ) {
+        return;
+    }
+    if !addressed_to_this_device(m.gimbal_device_id, ctx.config.compid) {
+        debug!(
+            "Ignoring GIMBAL_MANAGER_SET_PITCHYAW for gimbal_device_id={} (we are {})",
+            m.gimbal_device_id, ctx.config.compid
+        );
         return;
     }
     if !ctx.state.is_primary_allowed(sender_sysid, sender_compid) {
@@ -169,6 +186,13 @@ pub(super) async fn on_set_manual(
         ctx.config.sysid,
         ctx.config.compid,
     ) {
+        return;
+    }
+    if !addressed_to_this_device(m.gimbal_device_id, ctx.config.compid) {
+        debug!(
+            "Ignoring GIMBAL_MANAGER_SET_MANUAL_CONTROL for gimbal_device_id={} (we are {})",
+            m.gimbal_device_id, ctx.config.compid
+        );
         return;
     }
     if !ctx.state.is_primary_allowed(sender_sysid, sender_compid) {

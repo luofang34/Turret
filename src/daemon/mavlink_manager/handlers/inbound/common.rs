@@ -39,6 +39,45 @@ pub(super) fn addressed_to_us(
     sys_ok && comp_ok
 }
 
+/// True if a command carrying `gimbal_device_id` (or COMMAND_LONG
+/// `param7` decoded to a byte) should be acted on by *this* manager's
+/// single gimbal.
+///
+/// MAVLink GMv2 lets one manager front several gimbal devices; messages
+/// carry the device's component-id so the manager can route within
+/// itself. Turret runs one gimbal per manager today, advertised at
+/// `config.compid`, so the per-message device-id must be either:
+///
+/// - `0` — "all gimbal device components" per spec (broadcast).
+/// - `config.compid` — addressed specifically to us.
+///
+/// Any other value targets a different gimbal — non-MAVLink slots
+/// `1..=6` are explicitly someone else's, and any other component id
+/// is a different gimbal manager. We drop those silently rather than
+/// stealing motion intended for a peer.
+pub(super) fn addressed_to_this_device(gimbal_device_id: u8, our_compid: u8) -> bool {
+    gimbal_device_id == 0 || gimbal_device_id == our_compid
+}
+
+/// Decode a COMMAND_LONG `param7` (an `f32` carrying the
+/// `gimbal_device_id` per the spec for `MAV_CMD_DO_GIMBAL_MANAGER_*`)
+/// into the byte form. Anything not representable as a clean `u8`
+/// (NaN, infinity, negative, out of range, non-integer) returns `None`
+/// — callers treat that as "not for us" so a malformed GCS can't
+/// accidentally hit this gimbal.
+pub(super) fn gimbal_device_id_from_param7(p: f32) -> Option<u8> {
+    if !p.is_finite() || p < 0.0 || p > u8::MAX as f32 {
+        return None;
+    }
+    let rounded = p.round();
+    if (rounded - p).abs() > 0.5 {
+        // Shouldn't trigger after the round, but guards against future
+        // refactors. Belt + suspenders.
+        return None;
+    }
+    Some(rounded as u8)
+}
+
 /// Clamp `(pitch, roll, yaw)` to the configured device limits and log
 /// per-axis if a clamp actually occurred. The order of the returned
 /// tuple matches the input order, not the order arguments appear in
@@ -130,5 +169,53 @@ mod tests {
     fn addressed_to_us_rejects_other_systems() {
         assert!(!addressed_to_us(2, 154, 1, 154));
         assert!(!addressed_to_us(2, 0, 1, 154));
+    }
+
+    #[test]
+    fn addressed_to_this_device_accepts_broadcast_and_exact_match() {
+        // 0 = broadcast across every gimbal device under any manager.
+        assert!(addressed_to_this_device(0, 154));
+        // Exact compid match.
+        assert!(addressed_to_this_device(154, 154));
+    }
+
+    #[test]
+    fn addressed_to_this_device_rejects_other_devices() {
+        // A different gimbal under another manager (compid 155) — drop
+        // silently rather than stealing motion meant for that gimbal.
+        assert!(!addressed_to_this_device(155, 154));
+        // The 1..=6 "non-MAVLink gimbal" range is explicitly someone
+        // else's slot — never us.
+        for non_mavlink in 1..=6u8 {
+            assert!(
+                !addressed_to_this_device(non_mavlink, 154),
+                "non-MAVLink gimbal id {} must not match our compid 154",
+                non_mavlink
+            );
+        }
+    }
+
+    #[test]
+    fn gimbal_device_id_from_param7_decodes_valid_byte() {
+        assert_eq!(gimbal_device_id_from_param7(0.0), Some(0));
+        assert_eq!(gimbal_device_id_from_param7(154.0), Some(154));
+        // GCS may emit an integer that survives an f32 round-trip with
+        // a tiny rounding error — the round() inside the helper
+        // recovers the right byte.
+        assert_eq!(gimbal_device_id_from_param7(154.0001), Some(154));
+        assert_eq!(gimbal_device_id_from_param7(255.0), Some(255));
+    }
+
+    #[test]
+    fn gimbal_device_id_from_param7_rejects_garbage() {
+        // NaN and negatives must read as "not for us" — a malformed GCS
+        // can't accidentally drive this gimbal because its broken
+        // param7 matched the broadcast path.
+        assert_eq!(gimbal_device_id_from_param7(f32::NAN), None);
+        assert_eq!(gimbal_device_id_from_param7(-1.0), None);
+        assert_eq!(gimbal_device_id_from_param7(f32::INFINITY), None);
+        assert_eq!(gimbal_device_id_from_param7(f32::NEG_INFINITY), None);
+        assert_eq!(gimbal_device_id_from_param7(256.0), None);
+        assert_eq!(gimbal_device_id_from_param7(1e9), None);
     }
 }
