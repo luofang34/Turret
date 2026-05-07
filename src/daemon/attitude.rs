@@ -39,9 +39,9 @@ pub struct AttitudeTick {
     /// Operator-frame attitude (yaw already calibration-corrected by
     /// `GimbalHandle`).
     pub attitude: Attitude,
-    /// True when at least one poll within the last [`COMMS_ERROR_LINGER`]
-    /// failed. Solid links clear this on the next successful tick;
-    /// flaky links keep it set.
+    /// True when at least one poll within the last 1 s
+    /// (`COMMS_ERROR_LINGER`) failed. Solid links clear this on the
+    /// next successful tick; flaky links keep it set.
     pub link_recently_failed: bool,
 }
 
@@ -96,9 +96,9 @@ pub fn attitude_channel() -> (
 ///
 /// On failure:
 ///   - Logs at `warn` (rate-limited: 1st failure, then every 20th).
-///   - Pings `notify_lost` exactly once when reaching
-///     [`FAILURE_THRESHOLD`] consecutive failures, handing recovery
-///     to the daemon's reconnect supervisor.
+///   - Pings `notify_lost` exactly once when reaching the failure
+///     threshold (8 consecutive ticks ≈ 2 s of silence), handing
+///     recovery to the daemon's reconnect supervisor.
 ///   - Skips state updates and the broadcast for this tick.
 pub async fn attitude_poll_loop(
     gimbal: GimbalHandle,
