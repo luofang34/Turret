@@ -246,9 +246,17 @@ pub(super) async fn on_set_manual(
     };
     let yaw_deg = yaw_to_vehicle_frame(yaw_deg, m.flags, ctx, "SET_MANUAL_CONTROL");
     let (pitch, roll, yaw) = clamp_pry(pitch_deg, base_roll, yaw_deg, &ctx.config.limits);
+    // After normalize-then-clamp, the values are absolute degrees per
+    // axis — i.e. a position command. The earlier `CommandMode::Manual`
+    // label was a stub; the arbitrator's Manual branch rejected every
+    // such command, leaving the SET_MANUAL_CONTROL position-angle path
+    // dead. The rate path (NaN angles + non-zero rates above) routes
+    // through `apply_rate_increment`, which already constructs
+    // `CommandMode::Position` after integrating, so both branches now
+    // produce position commands the arbitrator can execute.
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
-        CommandMode::Manual,
+        CommandMode::Position,
         Some(yaw),
         Some(pitch),
         Some(roll),

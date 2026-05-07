@@ -101,10 +101,6 @@ impl Arbitrator {
                 warn!("Rate-mode command reached arbitrator unmapped — rejecting");
                 Outcome::Rejected
             }
-            CommandMode::Manual => {
-                warn!("Manual control mode not yet implemented — rejecting");
-                Outcome::Rejected
-            }
         }
     }
 }
@@ -271,20 +267,5 @@ mod tests {
             }
             other => panic!("expected Execute, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn manual_mode_is_rejected() {
-        let state_manager = StateManager::new();
-        let arbitrator = Arbitrator::new(state_manager);
-
-        let cmd = GimbalCommand::new(
-            ControlSource::Cli,
-            CommandMode::Manual,
-            Some(0.0),
-            Some(0.0),
-            Some(0.0),
-        );
-        assert_eq!(arbitrator.arbitrate(cmd), Outcome::Rejected);
     }
 }
