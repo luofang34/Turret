@@ -143,7 +143,25 @@ async fn set_pitchyaw_round_trips_through_attitude_status_broadcast() {
     let state_manager = StateManager::new();
     let notify_lost = Arc::new(Notify::new());
 
-    let manager = MavlinkManager::new(state_manager, gimbal, notify_lost, true);
+    // Spawn the daemon-level attitude poll loop alongside the manager —
+    // PR after the loop split (#67) made polling protocol-agnostic and
+    // moved it out of MavlinkManager. Phase 2 of this test relies on
+    // the broadcast loop seeing ticks on the channel below.
+    let (attitude_tx, attitude_rx) = turret::daemon::attitude::attitude_channel();
+    let _poll_task = tokio::spawn({
+        let gimbal = gimbal.clone();
+        let state = state_manager.clone();
+        let notify = notify_lost.clone();
+        let tx = attitude_tx.clone();
+        async move {
+            // No corrector — keeps the test tight (no calibration
+            // persistence side-effects). The poll runs at 4 Hz; phase
+            // 2's 3 s deadline gives ~12 ticks of headroom.
+            turret::daemon::attitude::attitude_poll_loop(gimbal, state, notify, None, tx).await;
+        }
+    });
+
+    let manager = MavlinkManager::new(state_manager, gimbal);
     let _manager_task = tokio::spawn({
         let cfg = config.clone();
         async move {
@@ -151,7 +169,7 @@ async fn set_pitchyaw_round_trips_through_attitude_status_broadcast() {
             // a startup error here would already have failed the test
             // through the phase-1 timeout, so collapsing it to `.ok()`
             // is the correct discard.
-            manager.start(cfg).await.ok();
+            manager.start(cfg, attitude_rx).await.ok();
         }
     });
 

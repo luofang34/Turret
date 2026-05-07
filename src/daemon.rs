@@ -36,6 +36,7 @@
 //! use std::sync::Arc;
 //! use std::net::{IpAddr, Ipv4Addr};
 //! use tokio::sync::Notify;
+//! use turret::daemon::attitude;
 //! use turret::daemon::config::{GimbalLimits, MavlinkConfig, Transport};
 //! use turret::daemon::gimbal_handle::GimbalHandle;
 //! use turret::daemon::mavlink_manager::MavlinkManager;
@@ -63,12 +64,24 @@
 //! let gimbal = GimbalHandle::new(Box::new(MyGimbal));
 //! let state = StateManager::new();
 //!
-//! // Pinged by the manager's attitude poll loop after enough consecutive
-//! // read failures. Wire it to your own reconnect task; if you don't
-//! // have one, just leave it un-awaited.
+//! // Pinged by the daemon-level attitude poll loop after enough
+//! // consecutive read failures. Wire it to your own reconnect task;
+//! // if you don't have one, just leave it un-awaited.
 //! let notify_lost = Arc::new(Notify::new());
 //!
-//! let manager = MavlinkManager::new(state, gimbal, notify_lost, true);
+//! // Hardware attitude poll — protocol-agnostic, runs unconditionally.
+//! // Front-ends (MAVLink, future CCSDS, anything else) subscribe to
+//! // ticks via `attitude_tx.subscribe()`.
+//! let (attitude_tx, attitude_rx) = attitude::attitude_channel();
+//! tokio::spawn(attitude::attitude_poll_loop(
+//!     gimbal.clone(),
+//!     state.clone(),
+//!     notify_lost,
+//!     None, // no yaw drift corrector for this minimal example
+//!     attitude_tx,
+//! ));
+//!
+//! let manager = MavlinkManager::new(state, gimbal);
 //! manager.start(MavlinkConfig {
 //!     enabled: true,
 //!     transport: Transport::Udp,
@@ -77,7 +90,7 @@
 //!     sysid: 1,
 //!     compid: 154,
 //!     limits: GimbalLimits::default(),
-//! }).await?;
+//! }, attitude_rx).await?;
 //! # Ok(()) }
 //! ```
 //!
@@ -92,6 +105,8 @@
 
 #[path = "daemon/arbitrator.rs"]
 pub mod arbitrator;
+#[path = "daemon/attitude.rs"]
+pub mod attitude;
 #[path = "daemon/calibration.rs"]
 pub mod calibration;
 #[path = "daemon/config.rs"]
@@ -197,7 +212,7 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
     // get_attitude stay in operator frame for every consumer.
     let gimbal_shared = GimbalHandle::with_yaw_offset_deg(gimbal, cal.yaw_offset_deg);
 
-    // The MAVLink attitude poll loop pings this when it counts too many
+    // The hardware attitude poll loop pings this when it counts too many
     // consecutive read failures; the reconnect task takes over from there.
     let notify_lost = Arc::new(Notify::new());
 
@@ -226,6 +241,29 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         });
     }
 
+    // Hardware attitude poll. Always-on, protocol-agnostic — owns the
+    // single writer of `state.measured_*`, the failure counter that
+    // signals `notify_lost` for hot-unplug recovery, and the per-tick
+    // yaw drift corrector. Front-ends (MAVLink today) subscribe to
+    // ticks via the broadcast channel below; with no subscribers
+    // attached the loop still polls and updates state, so an
+    // operator with `mavlink.enabled: false` still gets fresh IPC
+    // `status` data and a working reconnect path.
+    let (attitude_tx, _attitude_rx_seed) = attitude::attitude_channel();
+    {
+        let gimbal = gimbal_shared.clone();
+        let state = state_manager.clone();
+        let notify = notify_lost.clone();
+        let corrector = config
+            .gimbal
+            .yaw_corrector_enabled
+            .then(|| crate::daemon::yaw_corrector::YawCorrector::new(0.0));
+        let tx = attitude_tx.clone();
+        spawn_critical(&mut tasks, "attitude-poll", &task_died, async move {
+            attitude::attitude_poll_loop(gimbal, state, notify, corrector, tx).await;
+        });
+    }
+
     // Start IPC server
     let ipc_gimbal = gimbal_shared.clone();
     let ipc_state = state_manager.clone();
@@ -239,22 +277,18 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         }
     });
 
-    // Start MAVLink manager if enabled
+    // Start MAVLink manager if enabled. Subscribes to the attitude
+    // broadcast channel so its `GIMBAL_DEVICE_ATTITUDE_STATUS` loop
+    // sees every successful poll without owning the poll itself.
     if config.mavlink.enabled {
         let mavlink_gimbal = gimbal_shared.clone();
         let mavlink_state = state_manager.clone();
         let mavlink_cfg = config.mavlink.clone();
-        let mavlink_notify_lost = notify_lost.clone();
-        let yaw_corrector_enabled = config.gimbal.yaw_corrector_enabled;
+        let attitude_rx = attitude_tx.subscribe();
 
         spawn_critical(&mut tasks, "mavlink", &task_died, async move {
-            let manager = MavlinkManager::new(
-                mavlink_state,
-                mavlink_gimbal,
-                mavlink_notify_lost,
-                yaw_corrector_enabled,
-            );
-            if let Err(e) = manager.start(mavlink_cfg).await {
+            let manager = MavlinkManager::new(mavlink_state, mavlink_gimbal);
+            if let Err(e) = manager.start(mavlink_cfg, attitude_rx).await {
                 error!("MAVLink manager error: {}", e);
             }
         });
