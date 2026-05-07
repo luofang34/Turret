@@ -70,6 +70,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abstraction.
 
 ### Fixed
+- **Arbitrator now honors `None` = "leave this axis alone" instead of
+  silently substituting `0.0`.** `GimbalCommand`'s axes are
+  `Option<f32>` with a documented "`None` means leave alone" contract,
+  but `Arbitrator::arbitrate` was unwrapping each axis with
+  `unwrap_or(0.0)` — so any caller building a partial command (the IPC
+  `pitch` / `roll` / `yaw` subcommands, anyone wiring up a custom
+  protocol around the daemon's core) saw the unmentioned axes snap to
+  center. PR #62 sidestepped this from the inbound side by passing
+  `Some(baseline)` for omitted axes; this PR fixes it at the source.
+  `axis_baseline` is now a method on `StateManager` (was a free
+  helper in `inbound/common.rs`); the arbitrator captures the
+  baseline *before* `set_command` overwrites `last_command` with the
+  new partial values, then resolves `None` per-axis against it. Two
+  new arbitrator tests cover the new behavior (yaw-only follow-up
+  preserves prior pitch/roll; cold-boot None resolves to 0.0 cleanly).
+  Inbound tests for `axis_baseline` migrate to `daemon::state` next
+  to the new method.
 - **`SET_MANUAL_CONTROL` honors the same `NaN = ignore this axis`
   semantics as the other set messages.** The position-angle path was
   collapsing a NaN pitch / yaw to `0.0` and always sending `roll = 0.0`

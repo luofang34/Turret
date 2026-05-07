@@ -7,9 +7,7 @@
 //! NaN-position commands route to [`super::rate::apply_rate_increment`]
 //! when at least one rate axis is active.
 
-use super::common::{
-    addressed_to_us, axis_baseline, clamp_pry, dispatch_gimbal_command, yaw_to_vehicle_frame,
-};
+use super::common::{addressed_to_us, clamp_pry, dispatch_gimbal_command, yaw_to_vehicle_frame};
 use super::rate::{any_rate_active, apply_rate_increment};
 use crate::daemon::mavlink_manager::math::quaternion_wxyz_to_euler_deg;
 use crate::daemon::mavlink_manager::RxCtx;
@@ -128,7 +126,7 @@ pub(super) async fn on_set_pitchyaw(
     // last measured → 0). Roll has no field on this message at all, so
     // it always uses the baseline — keeps an earlier `set roll=15` from
     // being silently zeroed by a yaw-only SET_PITCHYAW.
-    let (base_pitch, base_roll, base_yaw) = axis_baseline(ctx.state);
+    let (base_pitch, base_roll, base_yaw) = ctx.state.axis_baseline();
     let pitch_deg = if m.pitch.is_nan() {
         base_pitch
     } else {
@@ -211,7 +209,7 @@ pub(super) async fn on_set_manual(
     // (last commanded → last measured → 0) the same way SET_PITCHYAW
     // does. SET_MANUAL_CONTROL has no roll field so roll always uses
     // the baseline.
-    let (base_pitch, base_roll, base_yaw) = axis_baseline(ctx.state);
+    let (base_pitch, base_roll, base_yaw) = ctx.state.axis_baseline();
     let pitch_deg = if m.pitch.is_nan() {
         base_pitch
     } else {

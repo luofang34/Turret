@@ -153,6 +153,45 @@ impl StateManager {
         self.vehicle_state(max_age).map(|s| s.yaw_deg)
     }
 
+    /// Per-axis baseline for "this axis is not in the current command —
+    /// keep it where I last set it."
+    ///
+    /// MAVLink GMv2 lets a SET_PITCHYAW / DO_GIMBAL_MANAGER_PITCHYAW /
+    /// SET_MANUAL_CONTROL NaN-out an angle field to mean "ignore this
+    /// axis"; the same intent is encoded as `None` on a `GimbalCommand`
+    /// axis throughout the daemon (IPC `pitch` / `roll` / `yaw`
+    /// subcommands are also single-axis). Substituting `0.0` for an
+    /// omitted axis would silently snap that axis to center on every
+    /// partial command — the opposite of what the spec asks for.
+    ///
+    /// Per-axis resolution order:
+    ///   1. `last_command.<axis>` if `Some(_)`. The most recent
+    ///      *commanded* value is what the user intended; it survives
+    ///      IMU noise and yaw drift correction nudges.
+    ///   2. `measured.<axis>` if any successful poll has happened. Used
+    ///      when no command has touched this axis yet (e.g. the first
+    ///      partial command after boot).
+    ///   3. `0.0` as a final fallback (cold boot, no measurement, no
+    ///      command). Keeps behavior defined when nothing else is.
+    ///
+    /// Returned in `(pitch, roll, yaw)` order to match
+    /// `inbound::common::clamp_pry` and the arbitrator's `Outcome::Execute`.
+    pub fn axis_baseline(&self) -> (f32, f32, f32) {
+        let last = self.last_command.read().clone();
+        let measured = self.state.read();
+        let measured_valid = measured.measured_at.is_some();
+        let pick = |last_axis: Option<f32>, measured_axis: f32| -> f32 {
+            last_axis
+                .or_else(|| measured_valid.then_some(measured_axis))
+                .unwrap_or(0.0)
+        };
+        (
+            pick(last.as_ref().and_then(|c| c.pitch), measured.pitch),
+            pick(last.as_ref().and_then(|c| c.roll), measured.roll),
+            pick(last.as_ref().and_then(|c| c.yaw), measured.yaw),
+        )
+    }
+
     /// Most recent rate-command timestamp for the given source, if any.
     /// Used by the rate→position integrator to compute `dt` between
     /// consecutive rate ticks from the same source.
