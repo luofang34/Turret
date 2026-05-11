@@ -20,7 +20,6 @@ rust-version = "1.83"
 # Source files that ARE compiled live under src/ and are included by default;
 # this list only filters auxiliary docs / scripts at the repo root.
 exclude = [
-    "test_daemon.sh",
     "systemd/**",
     ".github/**",
 ]

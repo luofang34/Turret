@@ -18,7 +18,7 @@ use crate::daemon::mavlink_manager::handlers::build::{
     send_gimbal_manager_information, send_mavlink_message,
 };
 use crate::daemon::mavlink_manager::RxCtx;
-use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
+use crate::daemon::models::{ControlSource, GimbalCommand, PrimaryControl};
 use mavlink::ardupilotmega::{
     GimbalManagerFlags, MavCmd, MavMessage, MavResult, COMMAND_LONG_DATA,
 };
@@ -214,10 +214,9 @@ async fn on_cmd_pitchyaw(
     let (pitch, roll, yaw) = clamp_pry(pitch_in, base_roll, yaw_in, &ctx.config.limits);
     let command = GimbalCommand::new(
         ControlSource::Mavlink(sender_sysid),
-        CommandMode::Position,
-        Some(yaw),
         Some(pitch),
         Some(roll),
+        Some(yaw),
     );
 
     let ack = match ctx.arbitrator.arbitrate(command) {

@@ -114,26 +114,19 @@ pub struct CorrectorStep {
 }
 
 /// Stateless drift estimator. The calling code holds the actual
-/// offset (in `GimbalHandle`) — this module just answers
-/// "given these readings, by how much should the offset move now?"
+/// offset (in `GimbalHandle`) — this type just answers "given these
+/// readings, by how much should the offset move now?"
 ///
-/// `mount_yaw_deg` is plumbed through for future use (when we move to
-/// an autopilot-cross-IMU reference for moving vehicles); the current
-/// PV-vs-SP filter doesn't need it.
-#[derive(Debug, Clone, Copy)]
-pub struct YawCorrector {
-    /// Mounting offset: gimbal-zero (body frame) relative to the vehicle
-    /// nose, in degrees. Default 0 ("gimbal forward = nose"). Set in the
-    /// `gimbal.mount_yaw_deg` YAML field. Unused by the current
-    /// PV-vs-SP filter — kept for forward-compatibility with a future
-    /// autopilot-cross-IMU mode.
-    pub mount_yaw_deg: f32,
-}
+/// No fields today: the PV-vs-SP filter is pure, and the planned
+/// autopilot-cross-IMU mode (which would need a mount-offset / vehicle
+/// frame) can add fields back when its consumer lands.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct YawCorrector;
 
 impl YawCorrector {
-    /// Construct with the given mounting offset.
-    pub const fn new(mount_yaw_deg: f32) -> Self {
-        Self { mount_yaw_deg }
+    /// Construct a corrector.
+    pub const fn new() -> Self {
+        Self
     }
 
     /// Compute one correction step.
@@ -198,7 +191,7 @@ mod tests {
 
     #[test]
     fn returns_none_without_recorded_sp() {
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         assert!(c.step(0.0, None, Some(SETTLED)).is_none());
     }
 
@@ -206,7 +199,7 @@ mod tests {
     fn returns_none_when_still_slewing() {
         // Most recent `set` was 0.5 s ago — well within motor settling
         // time. Don't sample drift while the gimbal is en route.
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         assert!(c
             .step(5.0, Some(0.0), Some(Duration::from_millis(500)))
             .is_none());
@@ -215,14 +208,14 @@ mod tests {
     #[test]
     fn returns_none_with_no_set_yet() {
         // Daemon just started — `time_since_last_set` is None.
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         assert!(c.step(0.0, Some(0.0), None).is_none());
     }
 
     #[test]
     fn perfect_calibration_yields_zero_correction() {
         // PV exactly at SP → zero error → zero correction.
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         let step = c.step(10.0, Some(10.0), Some(SETTLED)).unwrap();
         assert!(
             approx_eq(step.error_deg, 0.0, 1e-6),
@@ -237,7 +230,7 @@ mod tests {
         // PV reads 12 but SP was 10 → error = +2 → correction = +0.01
         // (under MAX_STEP). Positive correction means offset grows,
         // which makes PV = raw - offset come back down toward SP.
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         let step = c.step(12.0, Some(10.0), Some(SETTLED)).unwrap();
         assert!(
             approx_eq(step.error_deg, 2.0, 1e-4),
@@ -254,7 +247,7 @@ mod tests {
     #[test]
     fn negative_error_yields_negative_correction() {
         // PV reads 5 but SP was 10 → error = -5 → correction = -0.025.
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         let step = c.step(5.0, Some(10.0), Some(SETTLED)).unwrap();
         assert!(approx_eq(step.error_deg, -5.0, 1e-4));
         assert!(approx_eq(step.correction_deg, -0.025, 1e-4));
@@ -266,7 +259,7 @@ mod tests {
         // never run on a brand-new install). Correction must clamp to
         // MAX_STEP_DEG so we don't slew the offset at user-visible
         // speed.
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         let step = c.step(30.0, Some(10.0), Some(SETTLED)).unwrap();
         assert!(approx_eq(step.error_deg, 20.0, 1e-4));
         assert!(
@@ -280,7 +273,7 @@ mod tests {
     fn error_wraps_correctly_across_180_boundary() {
         // PV at -179°, SP at +179° — naive subtraction gives -358°,
         // wrapped should be +2° (the short way). Correction +0.01.
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         let step = c.step(-179.0, Some(179.0), Some(SETTLED)).unwrap();
         assert!(
             approx_eq(step.error_deg, 2.0, 1e-3),
@@ -295,14 +288,14 @@ mod tests {
         // Error > MAX_PLAUSIBLE_ERROR_DEG ⇒ likely something other
         // than drift (mid-motion, clamped command, IMU failure). Sit
         // still rather than slew toward a bad signal.
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         let step = c.step(50.0, Some(0.0), Some(SETTLED));
         assert!(step.is_none(), "expected None, got {step:?}");
     }
 
     #[test]
     fn rejects_nan_inputs() {
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         assert!(c.step(f32::NAN, Some(0.0), Some(SETTLED)).is_none());
         assert!(c.step(0.0, Some(f32::NAN), Some(SETTLED)).is_none());
     }
@@ -314,7 +307,7 @@ mod tests {
         // gimbal is settled at SP, so raw IMU reads sp + D and PV
         // (operator frame) reads sp + D - offset. The corrector
         // should drive offset toward D so PV converges to SP.
-        let c = YawCorrector::new(0.0);
+        let c = YawCorrector::new();
         let true_drift_deg: f32 = 5.0;
         let sp: f32 = 0.0;
         let mut offset: f32 = 0.0;

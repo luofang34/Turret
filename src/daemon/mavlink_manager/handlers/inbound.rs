@@ -28,7 +28,6 @@ mod set;
 use super::build::send_gimbal_manager_information;
 use crate::daemon::mavlink_manager::math::quaternion_wxyz_to_euler_deg;
 use crate::daemon::mavlink_manager::RxCtx;
-use crate::daemon::state::VehicleState;
 use mavlink::ardupilotmega::{MavMessage, AUTOPILOT_STATE_FOR_GIMBAL_DEVICE_DATA};
 use std::net::SocketAddr;
 use tracing::debug;
@@ -73,30 +72,20 @@ pub(in crate::daemon::mavlink_manager) async fn handle_mavlink_message(
     }
 }
 
-/// Ingest the autopilot's full vehicle state from
-/// `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE`. The quaternion is required (we
-/// drop the whole packet if it's NaN — without an attitude estimate
-/// the rest of the message is operationally useless to a gimbal). The
-/// scalar fields preserve their NaN sentinels per the spec ("NaN if
-/// unknown" for velocity / feed-forward yaw rate); the typed
-/// [`VehicleState::yaw_rate_deg_s`] uses `Option<f32>` so consumers
-/// can branch on validity without re-checking NaN.
+/// Ingest the autopilot's vehicle heading from
+/// `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE`. Only the yaw component is
+/// kept (it's the input to the earth→vehicle yaw transform); the
+/// other fields of the message are dropped on the floor today. Add
+/// them back to the store alongside a real consumer.
+///
+/// NaN-quaternion packets are dropped entirely — without an attitude
+/// estimate the rest of the message is operationally useless to a
+/// gimbal.
 fn on_autopilot_state(m: AUTOPILOT_STATE_FOR_GIMBAL_DEVICE_DATA, ctx: &RxCtx<'_>) {
     if m.q.iter().any(|c| c.is_nan()) {
         debug!("AUTOPILOT_STATE_FOR_GIMBAL_DEVICE with NaN quaternion — ignoring");
         return;
     }
-    let (pitch_deg, roll_deg, yaw_deg) = quaternion_wxyz_to_euler_deg(m.q);
-    let yaw_rate_deg_s = if m.feed_forward_angular_velocity_z.is_nan() {
-        None
-    } else {
-        Some(m.feed_forward_angular_velocity_z.to_degrees())
-    };
-    ctx.state.update_vehicle_state(VehicleState {
-        pitch_deg,
-        roll_deg,
-        yaw_deg,
-        yaw_rate_deg_s,
-        ned_velocity_m_s: (m.vx, m.vy, m.vz),
-    });
+    let (_pitch_deg, _roll_deg, yaw_deg) = quaternion_wxyz_to_euler_deg(m.q);
+    ctx.state.update_vehicle_yaw(yaw_deg);
 }

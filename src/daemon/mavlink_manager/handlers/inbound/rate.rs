@@ -11,7 +11,7 @@
 use super::common::{clamp_pry, dispatch_gimbal_command};
 use crate::daemon::mavlink_manager::math::{clamp_rate_dt, compute_rate_target_deg};
 use crate::daemon::mavlink_manager::RxCtx;
-use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand};
+use crate::daemon::models::{ControlSource, GimbalCommand};
 use std::time::Instant;
 
 /// True if any of the three axis rates is finite and non-zero. Used to
@@ -50,13 +50,7 @@ pub(super) async fn apply_rate_increment(
 
     let (pitch, roll, yaw) = clamp_pry(target_pitch, target_roll, target_yaw, &ctx.config.limits);
 
-    let command = GimbalCommand::new(
-        source.clone(),
-        CommandMode::Position,
-        Some(yaw),
-        Some(pitch),
-        Some(roll),
-    );
+    let command = GimbalCommand::new(source.clone(), Some(pitch), Some(roll), Some(yaw));
     dispatch_gimbal_command(command, ctx, label).await;
     ctx.state.record_rate_tick(source, now);
 }

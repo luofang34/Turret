@@ -116,7 +116,7 @@ impl Drop for SlotGuard {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::daemon::models::{CommandMode, GimbalCommand};
+    use crate::daemon::models::GimbalCommand;
     use std::time::Duration;
 
     fn fresh_pool() -> SlotPool {
@@ -173,7 +173,6 @@ mod tests {
         // Client A issues a command — populates last_command_at[slot].
         let cmd_a = GimbalCommand::new(
             ControlSource::UnixSocket(slot_id),
-            CommandMode::Position,
             Some(0.0),
             Some(0.0),
             Some(0.0),
@@ -189,7 +188,6 @@ mod tests {
         assert_eq!(g_b.id(), slot_id);
         let cmd_b = GimbalCommand::new(
             ControlSource::UnixSocket(slot_id),
-            CommandMode::Position,
             Some(1.0),
             Some(1.0),
             Some(1.0),

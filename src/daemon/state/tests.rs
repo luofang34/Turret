@@ -1,7 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::source_map::MAX_TRACKED_SOURCES;
 use super::*;
-use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand, PrimaryControl};
+use crate::daemon::models::{ControlSource, GimbalCommand, PrimaryControl};
+use std::time::Duration;
 
 #[test]
 fn primary_control_default_allows_all() {
@@ -48,27 +50,16 @@ fn test_state_update() {
     assert!(state.measured_at.is_some());
 }
 
-fn sample_vehicle_state(yaw_deg: f32) -> VehicleState {
-    VehicleState {
-        pitch_deg: 0.0,
-        roll_deg: 0.0,
-        yaw_deg,
-        yaw_rate_deg_s: None,
-        ned_velocity_m_s: (0.0, 0.0, 0.0),
-    }
-}
-
 #[test]
 fn vehicle_yaw_returns_none_until_set() {
     let m = StateManager::new();
     assert!(m.vehicle_yaw_deg(Duration::from_secs(1)).is_none());
-    assert!(m.vehicle_state(Duration::from_secs(1)).is_none());
 }
 
 #[test]
 fn vehicle_yaw_returns_value_within_window() {
     let m = StateManager::new();
-    m.update_vehicle_state(sample_vehicle_state(42.5));
+    m.update_vehicle_yaw(42.5);
     let yaw = m.vehicle_yaw_deg(Duration::from_secs(1));
     assert!(yaw.is_some());
     assert!((yaw.unwrap() - 42.5).abs() < 1e-4);
@@ -77,105 +68,11 @@ fn vehicle_yaw_returns_value_within_window() {
 #[test]
 fn vehicle_yaw_returns_none_when_stale() {
     let m = StateManager::new();
-    m.update_vehicle_state(sample_vehicle_state(42.5));
+    m.update_vehicle_yaw(42.5);
     // 0 ns max-age means "everything is stale" — proxy for the
     // real "last AUTOPILOT_STATE was > 1 s ago" case without
     // sleeping the test.
     assert!(m.vehicle_yaw_deg(Duration::ZERO).is_none());
-}
-
-#[test]
-fn vehicle_state_round_trips_full_struct() {
-    // Confirm every field decoded from AUTOPILOT_STATE_FOR_GIMBAL_DEVICE
-    // makes it through update / read unchanged. Catches future
-    // refactors that might silently drop a field while keeping the
-    // yaw-only convenience accessor working.
-    let m = StateManager::new();
-    let s = VehicleState {
-        pitch_deg: -3.5,
-        roll_deg: 1.25,
-        yaw_deg: 175.0,
-        yaw_rate_deg_s: Some(2.5),
-        ned_velocity_m_s: (10.0, -1.0, 0.5),
-    };
-    m.update_vehicle_state(s);
-    let got = m.vehicle_state(Duration::from_secs(1)).unwrap();
-    assert!((got.pitch_deg - s.pitch_deg).abs() < 1e-4);
-    assert!((got.roll_deg - s.roll_deg).abs() < 1e-4);
-    assert!((got.yaw_deg - s.yaw_deg).abs() < 1e-4);
-    assert!(got.yaw_rate_deg_s.is_some());
-    assert!((got.yaw_rate_deg_s.unwrap() - 2.5).abs() < 1e-4);
-    assert_eq!(got.ned_velocity_m_s.0, 10.0);
-    assert_eq!(got.ned_velocity_m_s.1, -1.0);
-    assert_eq!(got.ned_velocity_m_s.2, 0.5);
-}
-
-#[test]
-fn vehicle_state_preserves_nan_velocity_per_axis() {
-    // Spec says NAN per axis is allowed for velocity ("unknown"). Don't
-    // collapse it to zero — consumers branch on per-axis validity and
-    // a fake zero would be a positive-but-wrong claim.
-    let m = StateManager::new();
-    m.update_vehicle_state(VehicleState {
-        pitch_deg: 0.0,
-        roll_deg: 0.0,
-        yaw_deg: 0.0,
-        yaw_rate_deg_s: None,
-        ned_velocity_m_s: (1.0, f32::NAN, 0.0),
-    });
-    let got = m.vehicle_state(Duration::from_secs(1)).unwrap();
-    assert_eq!(got.ned_velocity_m_s.0, 1.0);
-    assert!(got.ned_velocity_m_s.1.is_nan());
-    assert_eq!(got.ned_velocity_m_s.2, 0.0);
-}
-
-#[test]
-fn evict_for_insert_drops_entries_past_ttl_keeps_fresh() {
-    // The eviction helper runs against a synthetic map so the test
-    // doesn't have to actually wait 5 minutes. Stamp two entries:
-    // one ten minutes ago (well past the TTL) and one a moment ago.
-    let mut map: HashMap<ControlSource, Instant> = HashMap::new();
-    let now = Instant::now();
-    let stale = now - Duration::from_secs(600);
-    let fresh = now - Duration::from_millis(100);
-    map.insert(ControlSource::Mavlink(1), stale);
-    map.insert(ControlSource::UnixSocket(99), fresh);
-    assert_eq!(map.len(), 2);
-
-    evict_for_insert(&mut map, now);
-    assert_eq!(map.len(), 1);
-    assert!(map.contains_key(&ControlSource::UnixSocket(99)));
-    assert!(!map.contains_key(&ControlSource::Mavlink(1)));
-}
-
-#[test]
-fn evict_for_insert_enforces_hard_cap_under_burst() {
-    // Synthesise a burst that the TTL cannot help with: every entry
-    // is fresh (within the 5-min window), but the count exceeds the
-    // hard cap. After the helper runs the map must be exactly at
-    // `MAX_TRACKED_SOURCES - 1` so the caller's insert leaves it at
-    // MAX. The single evicted entry is the oldest one we put in.
-    let mut map: HashMap<ControlSource, Instant> = HashMap::new();
-    let now = Instant::now();
-
-    // Fill to exactly the cap with timestamps that order
-    // monotonically (entry `i` is `i` ms before `now`, so larger `i`
-    // means older).
-    for i in 0..MAX_TRACKED_SOURCES as u32 {
-        map.insert(
-            ControlSource::UnixSocket(i),
-            now - Duration::from_millis(u64::from(i)),
-        );
-    }
-    assert_eq!(map.len(), MAX_TRACKED_SOURCES);
-
-    evict_for_insert(&mut map, now);
-
-    // Hard cap kicked in: one entry dropped, room for the imminent insert.
-    assert_eq!(map.len(), MAX_TRACKED_SOURCES - 1);
-    // The evicted entry is the oldest (highest `i`).
-    let evicted = ControlSource::UnixSocket(MAX_TRACKED_SOURCES as u32 - 1);
-    assert!(!map.contains_key(&evicted));
 }
 
 #[test]
@@ -186,14 +83,14 @@ fn rate_tick_burst_stays_bounded_at_cap() {
     // keeping the map bounded is the hard cap. After the burst the
     // map must hold ≤ MAX entries, period.
     let manager = StateManager::new();
-    let now = Instant::now();
+    let now = std::time::Instant::now();
     for i in 0..(MAX_TRACKED_SOURCES as u32) * 4 {
         manager.record_rate_tick(
             ControlSource::UnixSocket(i),
             now + Duration::from_nanos(u64::from(i)),
         );
     }
-    let map = manager.last_rate_at.read();
+    let map = manager.rate_tracker.map_handle().read();
     assert!(
         map.len() <= MAX_TRACKED_SOURCES,
         "map.len() = {} exceeded cap {}",
@@ -208,32 +105,26 @@ fn rate_limit_evicts_stale_source_entries() {
     // fast, plus a synthetic stale entry inserted directly into
     // the map. The next set_command call should sweep the stale
     // entry out before checking the live source.
-    let manager = StateManager::with_min_command_interval(std::time::Duration::from_millis(20));
+    let manager = StateManager::with_min_command_interval(Duration::from_millis(20));
 
     // Pre-populate with a stale entry from a fictitious old IPC
     // client (the ID won't recur — IPC IDs are monotonic).
     {
-        let mut map = manager.last_command_at.write();
+        let mut map = manager.commands.last_command_at_handle().write();
         map.insert(
             ControlSource::UnixSocket(1234),
-            Instant::now() - Duration::from_secs(600),
+            std::time::Instant::now() - Duration::from_secs(600),
         );
         assert_eq!(map.len(), 1);
     }
 
     // A real command from a live source triggers eviction.
-    let cmd = GimbalCommand::new(
-        ControlSource::Mavlink(2),
-        CommandMode::Position,
-        Some(0.0),
-        Some(0.0),
-        Some(0.0),
-    );
+    let cmd = GimbalCommand::new(ControlSource::Mavlink(2), Some(0.0), Some(0.0), Some(0.0));
     assert!(manager.set_command(cmd));
 
     // Stale entry is gone; only the freshly-recorded live source
     // remains.
-    let map = manager.last_command_at.read();
+    let map = manager.commands.last_command_at_handle().read();
     assert_eq!(map.len(), 1);
     assert!(map.contains_key(&ControlSource::Mavlink(2)));
 }
@@ -244,16 +135,16 @@ fn rate_tick_evicts_stale_source_entries() {
 
     // Pre-populate with a stale rate-tick entry.
     {
-        let mut map = manager.last_rate_at.write();
+        let mut map = manager.rate_tracker.map_handle().write();
         map.insert(
             ControlSource::UnixSocket(7777),
-            Instant::now() - Duration::from_secs(600),
+            std::time::Instant::now() - Duration::from_secs(600),
         );
     }
 
-    manager.record_rate_tick(ControlSource::Mavlink(3), Instant::now());
+    manager.record_rate_tick(ControlSource::Mavlink(3), std::time::Instant::now());
 
-    let map = manager.last_rate_at.read();
+    let map = manager.rate_tracker.map_handle().read();
     assert_eq!(map.len(), 1);
     assert!(map.contains_key(&ControlSource::Mavlink(3)));
 }
@@ -270,8 +161,7 @@ fn rate_limit_disabled_by_default() {
     let manager = StateManager::new();
     let cmd = || {
         GimbalCommand::new(
-            ControlSource::Cli,
-            CommandMode::Position,
+            ControlSource::UnixSocket(0),
             Some(0.0),
             Some(0.0),
             Some(0.0),
@@ -285,15 +175,7 @@ fn rate_limit_disabled_by_default() {
 #[test]
 fn rate_limit_blocks_back_to_back_same_source() {
     let manager = StateManager::with_min_command_interval(std::time::Duration::from_millis(50));
-    let cmd = || {
-        GimbalCommand::new(
-            ControlSource::Mavlink(1),
-            CommandMode::Position,
-            Some(0.0),
-            Some(0.0),
-            Some(0.0),
-        )
-    };
+    let cmd = || GimbalCommand::new(ControlSource::Mavlink(1), Some(0.0), Some(0.0), Some(0.0));
     // First accepted; second within 50 ms rejected.
     assert!(manager.set_command(cmd()));
     assert!(!manager.set_command(cmd()));
@@ -310,7 +192,6 @@ fn rate_limit_isolates_per_source() {
     let cmd_from = |sysid: u8| {
         GimbalCommand::new(
             ControlSource::Mavlink(sysid),
-            CommandMode::Position,
             Some(0.0),
             Some(0.0),
             Some(0.0),
@@ -329,8 +210,7 @@ fn rate_limit_clears_after_interval() {
     let manager = StateManager::with_min_command_interval(interval);
     let cmd = || {
         GimbalCommand::new(
-            ControlSource::Cli,
-            CommandMode::Position,
+            ControlSource::UnixSocket(0),
             Some(0.0),
             Some(0.0),
             Some(0.0),
@@ -348,30 +228,27 @@ fn rate_limit_clears_after_interval() {
 fn test_command_priority() {
     let manager = StateManager::new();
 
-    // Low priority command
+    // Low priority command (IPC client).
     let cmd1 = GimbalCommand::new(
-        ControlSource::Cli,
-        CommandMode::Position,
+        ControlSource::UnixSocket(0),
         Some(0.0),
         Some(0.0),
         Some(0.0),
     );
     assert!(manager.set_command(cmd1.clone()));
 
-    // High priority command should override
+    // High priority command (autopilot, sysid 1) should override.
     let cmd2 = GimbalCommand::new(
         ControlSource::Mavlink(1),
-        CommandMode::Position,
         Some(10.0),
         Some(10.0),
         Some(10.0),
     );
     assert!(manager.set_command(cmd2.clone()));
 
-    // Low priority command should be rejected
+    // Another IPC client at the same lower priority is rejected.
     let cmd3 = GimbalCommand::new(
         ControlSource::UnixSocket(1),
-        CommandMode::Position,
         Some(20.0),
         Some(20.0),
         Some(20.0),
@@ -411,11 +288,10 @@ fn axis_baseline_prefers_last_command_per_axis() {
     let s = StateManager::new();
     s.update_measured_angles(20.5, 10.5, 30.5); // PV slightly drifted
     let cmd = GimbalCommand::new(
-        ControlSource::Cli,
-        CommandMode::Position,
-        Some(20.0), // yaw
+        ControlSource::UnixSocket(0),
         Some(10.0), // pitch
         None,       // roll: not commanded
+        Some(20.0), // yaw
     );
     assert!(s.set_command(cmd));
     assert_eq!(s.axis_baseline(), (10.0, 30.5, 20.0));
@@ -429,11 +305,10 @@ fn axis_baseline_command_only_no_measured() {
     // identical at runtime but mean "no measurement yet."
     let s = StateManager::new();
     let cmd = GimbalCommand::new(
-        ControlSource::Cli,
-        CommandMode::Position,
-        None,       // yaw: not commanded
+        ControlSource::UnixSocket(0),
         Some(10.0), // pitch
         None,       // roll: not commanded
+        None,       // yaw: not commanded
     );
     assert!(s.set_command(cmd));
     assert_eq!(s.axis_baseline(), (10.0, 0.0, 0.0));

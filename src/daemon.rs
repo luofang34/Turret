@@ -147,12 +147,11 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 /// Main daemon entry point
 pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()> {
-    // Load configuration
-    let config = if let Some(path) = config_path {
-        DaemonConfig::load_or_default(path)
-    } else {
-        DaemonConfig::load_or_default("turret.yaml")
-    };
+    // Load configuration. Missing default `turret.yaml` is fine (first
+    // run on a fresh install picks up built-in defaults); missing
+    // `--config foo.yaml` is an error (the operator asked for that
+    // specific file); malformed YAML is always an error.
+    let config = DaemonConfig::load_for_startup(config_path.as_deref())?;
 
     info!("Daemon configuration loaded");
     info!("  Device: {}", config.device.path);
@@ -257,7 +256,7 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         let corrector = config
             .gimbal
             .yaw_corrector_enabled
-            .then(|| crate::daemon::yaw_corrector::YawCorrector::new(0.0));
+            .then(crate::daemon::yaw_corrector::YawCorrector::new);
         let tx = attitude_tx.clone();
         spawn_critical(&mut tasks, "attitude-poll", &task_died, async move {
             attitude::attitude_poll_loop(gimbal, state, notify, corrector, tx).await;

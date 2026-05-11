@@ -49,7 +49,7 @@ gimbal:
   # between SETs" assumption breaks down.
   yaw_corrector_enabled: true
 
-# Logging configuration
-logging:
-  # Log level: "trace", "debug", "info", "warn", "error"
-  level: info
+# Logging: configure via the CLI's -v / -vv / -vvv flag and/or the
+# RUST_LOG environment variable. There is no logging section here —
+# tracing is initialized before the daemon reads this file, so a YAML
+# knob would silently do nothing.

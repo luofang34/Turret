@@ -1,6 +1,7 @@
 //! YAML-backed daemon configuration. Loaded from `turret.yaml` on
-//! startup; falls back to [`DaemonConfig::default`] if the file is
-//! missing or malformed.
+//! startup via [`DaemonConfig::load_for_startup`]: a missing *default*
+//! file produces built-in defaults; an explicit `--config` path or any
+//! parse / I/O error fails loud rather than silently falling back.
 
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
@@ -23,6 +24,12 @@ fn default_bind_addr() -> IpAddr {
 }
 
 /// Top-level daemon config shape — one section per long-lived component.
+///
+/// There is no `logging` section: tracing-subscriber is set up before the
+/// daemon loads YAML (the CLI's `-v / -vv / -vvv` controls the default
+/// floor, `RUST_LOG` tunes per-target filters). A YAML knob would change
+/// behavior only after the subscriber has already been installed, which
+/// silently does nothing — see commit history if reconsidering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
     /// Serial device selection.
@@ -31,8 +38,6 @@ pub struct DaemonConfig {
     pub ipc: IpcConfig,
     /// MAVLink Gimbal Manager settings.
     pub mavlink: MavlinkConfig,
-    /// Tracing subscriber settings.
-    pub logging: LoggingConfig,
     /// Command arbitration tuning (priority + per-source rate limit).
     #[serde(default)]
     pub arbitrator: ArbitratorConfig,
@@ -181,14 +186,6 @@ impl Default for GimbalLimits {
     }
 }
 
-/// Tracing subscriber knob. The CLI's `-v / -vv / -vvv` flag overrides
-/// this for command-line usage; the daemon honors only this field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoggingConfig {
-    /// Log level — `"trace" / "debug" / "info" / "warn" / "error"`.
-    pub level: String,
-}
-
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -207,9 +204,6 @@ impl Default for DaemonConfig {
                 compid: 154, // MAV_COMP_ID_GIMBAL
                 limits: GimbalLimits::default(),
             },
-            logging: LoggingConfig {
-                level: "info".to_string(),
-            },
             arbitrator: ArbitratorConfig::default(),
             gimbal: GimbalConfig::default(),
         }
@@ -217,28 +211,51 @@ impl Default for DaemonConfig {
 }
 
 impl DaemonConfig {
-    /// Load configuration from YAML file
+    /// Load configuration from YAML file.
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> crate::error::Result<Self> {
         let contents = std::fs::read_to_string(path)?;
         let config: DaemonConfig = serde_yaml_ng::from_str(&contents)?;
         Ok(config)
     }
 
-    /// Save configuration to YAML file
+    /// Save configuration to YAML file.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> crate::error::Result<()> {
         let contents = serde_yaml_ng::to_string(self)?;
         std::fs::write(path, contents)?;
         Ok(())
     }
 
-    /// Load configuration from file if it exists, otherwise use defaults
-    pub fn load_or_default<P: AsRef<Path>>(path: P) -> Self {
+    /// Load configuration for daemon startup.
+    ///
+    /// Semantics:
+    /// - If `explicit_path` is `Some(p)` the path was supplied via
+    ///   `--config`. A missing file is an error — the operator asked
+    ///   for *this* file, not the default location.
+    /// - If `explicit_path` is `None` the daemon falls back to the
+    ///   conventional `turret.yaml` in the working directory. A missing
+    ///   file silently produces defaults; this is the normal first-run
+    ///   path.
+    ///
+    /// Parse errors (malformed YAML, type mismatch) and other I/O
+    /// errors (permission denied, etc.) always propagate. A typo in
+    /// `turret.yaml` must never silently degrade to defaults — that
+    /// risk-masks `device: auto` and a wide-open IPC socket the
+    /// operator didn't ask for.
+    pub fn load_for_startup(explicit_path: Option<&str>) -> crate::error::Result<Self> {
+        const DEFAULT_PATH: &str = "turret.yaml";
+        let (path, explicit) = match explicit_path {
+            Some(p) => (p, true),
+            None => (DEFAULT_PATH, false),
+        };
         match Self::load_from_file(path) {
-            Ok(config) => config,
-            Err(e) => {
-                tracing::warn!("Failed to load config file: {}. Using defaults.", e);
-                Self::default()
+            Ok(config) => Ok(config),
+            Err(crate::error::Error::Io(e))
+                if e.kind() == std::io::ErrorKind::NotFound && !explicit =>
+            {
+                tracing::info!("No config file at {}; using built-in defaults", path);
+                Ok(Self::default())
             }
+            Err(e) => Err(e),
         }
     }
 }
@@ -262,8 +279,6 @@ mavlink:
   udp_port: 14550
   sysid: 1
   compid: 154
-logging:
-  level: info
 "#
     }
 
@@ -296,8 +311,63 @@ logging:
 
     #[test]
     fn daemon_config_default_enables_corrector() {
-        // The non-YAML default path (used by `load_or_default` when the
-        // file is missing) must agree with the YAML-default behavior.
+        // The non-YAML default path (used by `load_for_startup` when
+        // the default `turret.yaml` is absent) must agree with the
+        // YAML-default behavior.
         assert!(DaemonConfig::default().gimbal.yaw_corrector_enabled);
+    }
+
+    /// Build a temp directory we can `cd` to without races between
+    /// parallel tests poking at `turret.yaml` in the package root.
+    fn temp_workdir() -> std::path::PathBuf {
+        let pid = std::process::id();
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let p = std::env::temp_dir().join(format!("turret-cfg-test-{pid}-{n}"));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn load_for_startup_explicit_missing_file_errors() {
+        // `--config /no/such/path.yaml` must fail loudly. The
+        // operator asked for *that* file; substituting defaults
+        // would be a silent surprise.
+        let dir = temp_workdir();
+        let missing = dir.join("nope.yaml");
+        let r = DaemonConfig::load_for_startup(Some(missing.to_str().unwrap()));
+        assert!(r.is_err(), "explicit missing file must error, got Ok");
+    }
+
+    #[test]
+    fn load_for_startup_default_missing_file_uses_defaults() {
+        // No `--config`, no `turret.yaml` in CWD: built-in defaults
+        // is the right behavior (first run on a fresh install).
+        let dir = temp_workdir();
+        let prev = std::env::current_dir().unwrap();
+        // `set_current_dir` is process-wide; we restore in a deferred
+        // step so a panic doesn't leave the test runner in /tmp.
+        std::env::set_current_dir(&dir).unwrap();
+        let r = DaemonConfig::load_for_startup(None);
+        std::env::set_current_dir(prev).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        let cfg = r.expect("missing default file must produce defaults, not error");
+        assert_eq!(cfg.device.path, "auto");
+    }
+
+    #[test]
+    fn load_for_startup_malformed_yaml_errors() {
+        // A typo in `turret.yaml` must NOT silently degrade to
+        // defaults — that risk-masks `device: auto` and the default
+        // socket the operator didn't pick. Same shape regardless of
+        // whether the path was explicit.
+        let dir = temp_workdir();
+        let path = dir.join("bad.yaml");
+        std::fs::write(&path, b"device: { path:\nipc:\n  socket_path: x\n").unwrap();
+        let r = DaemonConfig::load_for_startup(Some(path.to_str().unwrap()));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(r.is_err(), "malformed YAML must error, got Ok");
     }
 }

@@ -55,6 +55,11 @@ impl PanMode {
 /// Where a gimbal command came from. Used by [`ControlSource::priority`] to
 /// decide whether a newly arrived command preempts the in-flight one, and
 /// hashed by the per-source rate limiter in `StateManager`.
+///
+/// There is no `Cli` variant: the `turret` binary's subcommands route
+/// either through the daemon's IPC socket (becoming `UnixSocket(_)` from
+/// the daemon's perspective) or directly to the device when no daemon
+/// is reachable (no arbitration involved at all).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ControlSource {
     /// IPC client connected to the Unix socket. The `u32` is an
@@ -63,8 +68,6 @@ pub enum ControlSource {
     /// MAVLink message originating from sysid `u8`. Sysid 1 is treated as
     /// the autopilot and gets the highest priority.
     Mavlink(u8),
-    /// CLI subcommand running on the same host (e.g. `turret set ...`).
-    Cli,
 }
 
 impl ControlSource {
@@ -76,27 +79,8 @@ impl ControlSource {
             ControlSource::Mavlink(1) => 100,
             ControlSource::Mavlink(_) => 50,
             ControlSource::UnixSocket(_) => 20,
-            ControlSource::Cli => 10,
         }
     }
-}
-
-/// What the command body's three axis values mean. Inbound handlers
-/// always normalize to `Position` before reaching the arbitrator —
-/// rate-stream commands are integrated into a position update by
-/// `inbound::rate::apply_rate_increment`, and `SET_MANUAL_CONTROL`'s
-/// normalized values are scaled to absolute degrees by `on_set_manual`
-/// — so `Position` is the only mode the gimbal ever sees in practice.
-/// `Rate` is kept as a routing-bug sentinel that the arbitrator
-/// rejects with a warn.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum CommandMode {
-    /// Absolute angle in degrees per axis.
-    Position,
-    /// Angular velocity in degrees per second. Production paths convert
-    /// to `Position` at the inbound layer; a bare `Rate` reaching the
-    /// arbitrator is a routing bug and gets rejected.
-    Rate,
 }
 
 /// MAVLink primary / secondary control ownership.
@@ -130,42 +114,51 @@ impl PrimaryControl {
     }
 }
 
-/// One inbound command on its way through the arbitrator. `yaw / pitch /
-/// roll` are `Option<f32>` so a partial command can leave an axis
-/// untouched, which the IPC `pitch`/`roll`/`yaw` subcommands take advantage
-/// of.
+/// One inbound command on its way through the arbitrator. Always a
+/// position command — every rate-stream code path integrates to
+/// position before constructing one of these, so the arbitrator only
+/// sees absolute angles.
+///
+/// Per-axis `Option<f32>` lets a partial command leave an axis untouched
+/// (the IPC `pitch`/`roll`/`yaw` subcommands, MAVLink's
+/// `SET_PITCHYAW`/`SET_MANUAL_CONTROL` NaN-on-an-axis convention, etc.).
+/// Field order matches [`crate::gimbal::GimbalDevice::set_attitude`] so
+/// reading any chunk of arbitration code gives `(pitch, roll, yaw)`
+/// throughout instead of swapping mid-pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GimbalCommand {
     /// Where this command came from. Drives priority arbitration.
     pub source: ControlSource,
-    /// Whether `yaw / pitch / roll` are angles, rates, or normalized inputs.
-    pub mode: CommandMode,
-    /// Yaw axis — `None` means "leave alone".
-    pub yaw: Option<f32>,
     /// Pitch axis — `None` means "leave alone".
     pub pitch: Option<f32>,
     /// Roll axis — `None` means "leave alone".
     pub roll: Option<f32>,
+    /// Yaw axis — `None` means "leave alone".
+    pub yaw: Option<f32>,
     /// When this command was constructed. Used for tie-breaking
     /// same-priority sources and for staleness checks.
     pub timestamp: SystemTime,
 }
 
 impl GimbalCommand {
-    /// Construct a command stamped with the current time.
+    /// Construct a position command stamped with the current time.
+    ///
+    /// Argument order matches
+    /// [`crate::gimbal::GimbalDevice::set_attitude`] and the
+    /// [`crate::daemon::arbitrator::Outcome::Execute`] field order —
+    /// the same `(pitch, roll, yaw)` shape from inbound decode through
+    /// hardware write.
     pub fn new(
         source: ControlSource,
-        mode: CommandMode,
-        yaw: Option<f32>,
         pitch: Option<f32>,
         roll: Option<f32>,
+        yaw: Option<f32>,
     ) -> Self {
         Self {
             source,
-            mode,
-            yaw,
             pitch,
             roll,
+            yaw,
             timestamp: SystemTime::now(),
         }
     }

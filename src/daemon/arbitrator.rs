@@ -1,6 +1,6 @@
-//! Priority-aware command arbitrator: serializes IPC / MAVLink / CLI
-//! commands onto the single gimbal handle and rejects lower-priority
-//! commands when a higher-priority one is still in flight.
+//! Priority-aware command arbitrator: serializes IPC / MAVLink commands
+//! onto the single gimbal handle and rejects lower-priority commands
+//! when a higher-priority one is still in flight.
 //!
 //! The arbitrator no longer touches the gimbal hardware itself — that's
 //! [`super::gimbal_handle::GimbalHandle`]'s job, which runs the actual
@@ -9,18 +9,20 @@
 //! (`Rejected`) or to invoke `gimbal.set_attitude(...)` with the
 //! decoded `(pitch, roll, yaw)`.
 
-use super::models::{CommandMode, GimbalCommand};
+use super::models::GimbalCommand;
 use super::state::StateManager;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// What the caller should do after asking the arbitrator about a
 /// command. Decoupled from the gimbal handle so the arbitrator stays
 /// pure (no I/O) and unit-testable without a mock device.
+///
+/// `Execute` field order matches [`GimbalCommand`]'s field order and
+/// [`crate::gimbal::GimbalDevice::set_attitude`] — same `(pitch, roll,
+/// yaw)` shape all the way through.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Outcome {
     /// Caller should call `gimbal.set_attitude(pitch, roll, yaw)`.
-    /// Order matches the `GimbalDevice::set_attitude` parameter order
-    /// (NOT the `GimbalCommand::new` order, which puts yaw first).
     Execute {
         /// Pitch angle in degrees.
         pitch: f32,
@@ -54,7 +56,7 @@ impl Arbitrator {
     #[tracing::instrument(
         level = "debug",
         skip(self),
-        fields(source = ?command.source, mode = ?command.mode)
+        fields(source = ?command.source)
     )]
     pub fn arbitrate(&self, command: GimbalCommand) -> Outcome {
         // Capture the per-axis baseline *before* set_command overwrites
@@ -81,26 +83,15 @@ impl Arbitrator {
             command.source.priority()
         );
 
-        match command.mode {
-            CommandMode::Position => Outcome::Execute {
-                // None on an axis = "leave alone" per the GimbalCommand
-                // contract. Resolve against the captured baseline rather
-                // than collapsing to 0.0 — a partial command (e.g. IPC
-                // `pitch 10` or a yaw-only MAVLink SET_PITCHYAW) must
-                // not silently snap unmentioned axes to center.
-                pitch: command.pitch.unwrap_or(base_pitch),
-                roll: command.roll.unwrap_or(base_roll),
-                yaw: command.yaw.unwrap_or(base_yaw),
-            },
-            CommandMode::Rate => {
-                // Rate path is converted to position at the inbound layer
-                // before reaching the arbitrator (see `inbound::apply_rate_increment`).
-                // A bare `CommandMode::Rate` here is a routing bug or an
-                // IPC client constructing one directly — neither of which
-                // we can sensibly execute.
-                warn!("Rate-mode command reached arbitrator unmapped — rejecting");
-                Outcome::Rejected
-            }
+        // None on an axis = "leave alone" per the GimbalCommand
+        // contract. Resolve against the captured baseline rather than
+        // collapsing to 0.0 — a partial command (e.g. IPC `pitch 10`
+        // or a yaw-only MAVLink SET_PITCHYAW) must not silently snap
+        // unmentioned axes to center.
+        Outcome::Execute {
+            pitch: command.pitch.unwrap_or(base_pitch),
+            roll: command.roll.unwrap_or(base_roll),
+            yaw: command.yaw.unwrap_or(base_yaw),
         }
     }
 }
@@ -109,7 +100,7 @@ impl Arbitrator {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::daemon::models::{CommandMode, ControlSource, GimbalCommand};
+    use crate::daemon::models::{ControlSource, GimbalCommand};
 
     #[test]
     fn position_command_decodes_to_execute() {
@@ -117,11 +108,10 @@ mod tests {
         let arbitrator = Arbitrator::new(state_manager.clone());
 
         let cmd = GimbalCommand::new(
-            ControlSource::Cli,
-            CommandMode::Position,
-            Some(10.0), // yaw
+            ControlSource::UnixSocket(0),
             Some(20.0), // pitch
             Some(30.0), // roll
+            Some(10.0), // yaw
         );
 
         match arbitrator.arbitrate(cmd) {
@@ -136,9 +126,9 @@ mod tests {
         // Arbitrator records the command in `last_command` for
         // primary-control and observability …
         let last = state_manager.get_last_command().unwrap();
-        assert_eq!(last.yaw, Some(10.0));
         assert_eq!(last.pitch, Some(20.0));
         assert_eq!(last.roll, Some(30.0));
+        assert_eq!(last.yaw, Some(10.0));
 
         // … but does NOT touch state.{yaw,pitch,roll} — those are owned by
         // the attitude poll loop and stay at their default zero until a
@@ -157,7 +147,6 @@ mod tests {
 
         let cmd1 = GimbalCommand::new(
             ControlSource::Mavlink(1),
-            CommandMode::Position,
             Some(10.0),
             Some(10.0),
             Some(10.0),
@@ -168,8 +157,7 @@ mod tests {
         ));
 
         let cmd2 = GimbalCommand::new(
-            ControlSource::Cli,
-            CommandMode::Position,
+            ControlSource::UnixSocket(0),
             Some(20.0),
             Some(20.0),
             Some(20.0),
@@ -179,23 +167,6 @@ mod tests {
         // The previously-accepted command stays as last_command.
         let last = state_manager.get_last_command().unwrap();
         assert_eq!(last.yaw, Some(10.0));
-    }
-
-    #[test]
-    fn rate_mode_at_arbitrator_is_rejected() {
-        // Rate-path commands are translated to Position at the inbound
-        // layer; a bare CommandMode::Rate reaching here is a routing bug.
-        let state_manager = StateManager::new();
-        let arbitrator = Arbitrator::new(state_manager);
-
-        let cmd = GimbalCommand::new(
-            ControlSource::Cli,
-            CommandMode::Rate,
-            Some(0.0),
-            Some(0.0),
-            Some(0.0),
-        );
-        assert_eq!(arbitrator.arbitrate(cmd), Outcome::Rejected);
     }
 
     #[test]
@@ -212,10 +183,9 @@ mod tests {
         // arbitration and never reach the Position branch.
         let prime = GimbalCommand::new(
             ControlSource::Mavlink(1),
-            CommandMode::Position,
-            Some(20.0), // yaw
             Some(10.0), // pitch
             Some(15.0), // roll
+            Some(20.0), // yaw
         );
         assert!(matches!(
             arbitrator.arbitrate(prime),
@@ -226,10 +196,9 @@ mod tests {
         // resolve to the previously commanded 10 / 15, not 0.
         let yaw_only = GimbalCommand::new(
             ControlSource::Mavlink(1),
-            CommandMode::Position,
-            Some(30.0), // yaw — changed
             None,       // pitch — leave alone
             None,       // roll — leave alone
+            Some(30.0), // yaw — changed
         );
         match arbitrator.arbitrate(yaw_only) {
             Outcome::Execute { pitch, roll, yaw } => {
@@ -253,11 +222,10 @@ mod tests {
         let arbitrator = Arbitrator::new(state_manager);
 
         let cmd = GimbalCommand::new(
-            ControlSource::Cli,
-            CommandMode::Position,
+            ControlSource::UnixSocket(0),
+            None,
+            None,
             Some(15.0), // yaw — only this axis commanded
-            None,
-            None,
         );
         match arbitrator.arbitrate(cmd) {
             Outcome::Execute { pitch, roll, yaw } => {

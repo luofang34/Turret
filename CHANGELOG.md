@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`DaemonConfig::load_or_default` replaced by `load_for_startup`.**
+  The old loader swallowed every error (parse, I/O, type mismatch) and
+  silently fell back to defaults — a typo in `turret.yaml` would
+  quietly run the daemon against `device: auto`, default socket, and
+  default MAVLink settings. New semantics: missing *default*
+  `turret.yaml` → defaults (first-run path, logged at info); explicit
+  `--config foo.yaml` that doesn't exist → error; malformed YAML at
+  either path → error. Three tests cover each branch.
+- **`GimbalCommand::new` argument order is now `(source, pitch, roll,
+  yaw)`** to match `GimbalDevice::set_attitude` and
+  `Outcome::Execute { pitch, roll, yaw }`. The previous `(source, mode,
+  yaw, pitch, roll)` shape forced every call site (IPC, MAVLink
+  inbound handlers, tests) to manually reorder fields and was flagged
+  in the type's own docstring as "NOT the GimbalCommand::new order."
+  Same `(pitch, roll, yaw)` shape now from inbound decode through
+  hardware write.
+- **`StateManager` internals split into five focused sub-stores under
+  `daemon/state/`**: `GimbalStateStore` (measured attitude + pan_mode
+  + standby + firmware), `CommandStore` (last-accepted command +
+  per-source rate-limit timestamps), `PrimaryStore` (MAVLink ownership),
+  `RateTracker` (per-source rate-tick timing), `VehicleContext`
+  (autopilot snapshot). Each sub-store owns one lock and one concern,
+  and is `Clone` independently — new code that only needs one slice
+  can take just that slice instead of dragging the whole daemon state
+  along. The `StateManager` facade is preserved as a thin coordinator
+  so existing call sites are unchanged. Shared TTL + hard-cap eviction
+  for the per-source maps moved to `daemon/state/source_map.rs`.
+- **`VehicleState` trimmed to just yaw heading.** The other fields
+  (pitch, roll, NED velocity, feed-forward yaw rate) were decoded from
+  `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE` but never consumed by anything
+  downstream. Replaced by `Option<(f32, Instant)>` inside
+  `VehicleContext`. Re-add the dropped fields alongside the consumer
+  that actually needs them (horizon-lock pan, velocity-aware lead/lag,
+  yaw-rate feed-forward) rather than carrying speculative state.
+
+### Removed
+- **`LoggingConfig` YAML section.** The `logging.level` field was
+  parsed but never applied — tracing-subscriber is initialized from
+  the CLI's `-v / -vv / -vvv` flag before `run_daemon` loads YAML, so
+  the knob silently did nothing despite the docstring claiming
+  otherwise. Configure logging through `-v` and/or `RUST_LOG` env var.
+- **`CommandMode` enum.** Only the `Position` variant was ever produced
+  in practice; `Rate` was a routing-bug sentinel the arbitrator
+  rejected with a `warn!`. Rate-stream commands always integrate to
+  position before reaching the arbitrator, so the enum collapsed to a
+  single variant pretending to be a discriminator. Dropped along with
+  the `mode` field on `GimbalCommand` and the dead `Rate` branch in
+  the arbitrator.
+- **`ControlSource::Cli` variant.** Used only in tests; real CLI
+  invocations route via IPC (`UnixSocket(_)`) or directly to the
+  device (no `ControlSource` involved at all). Tests now use
+  `UnixSocket(_)` to mirror real flows.
+- **`YawCorrector::mount_yaw_deg` field.** Unused; the docstring
+  claimed it read a `gimbal.mount_yaw_deg` YAML field that did not
+  exist. The struct is now zero-sized; re-add fields alongside the
+  autopilot-cross-IMU consumer they're for.
+- **`test_daemon.sh`** at the repo root — described an old CLI shape
+  (`turret daemon --socket`, `set_attitude`, `get_status`) that hasn't
+  existed since the IPC schema rename. Excluded from the crate
+  package, so removal is a no-op for downstream consumers.
+
 ## [0.1.3] - 2026-05-07
 
 ### Added
