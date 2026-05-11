@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Config format switched from YAML to TOML.** The daemon now loads
+  `turret.toml` (not `turret.yaml`); the systemd unit, README, and
+  internal docs are updated to match. Same `serde`-derived shape — the
+  field names and tables map 1:1 from the old YAML — so the migration
+  is a syntactic re-key:
+
+  ```yaml          ⇒  ```toml
+  mavlink:                [mavlink]
+    enabled: true           enabled = true
+    udp_port: 14550         udp_port = 14550
+  ```
+
+  Rationale: the project already ships `toml` (used for
+  `calibration.toml`) and `Cargo.toml`. Switching `turret.yaml` to
+  `turret.toml` drops the `serde_yaml_ng` dependency entirely and
+  gives the daemon a single parser format across every config-shaped
+  file. Operators with an existing `turret.yaml` and / or a systemd
+  unit pointing at `.yaml` must rename and convert; with the new
+  strict loader an unconverted file fails immediately rather than
+  silently running with defaults. `crate::error::Error::Config` now
+  wraps `toml::de::Error` instead of `serde_yaml_ng::Error` (the
+  variant name is unchanged).
 - **`DaemonConfig::load_or_default` replaced by `load_for_startup`.**
   The old loader swallowed every error (parse, I/O, type mismatch) and
   silently fell back to defaults — a typo in `turret.yaml` would

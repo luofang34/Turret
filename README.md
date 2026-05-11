@@ -113,7 +113,7 @@ daemon to use them, or use `turret set` (which routes via IPC) instead.
 turret --daemon
 
 # Or with custom config
-turret --daemon --config turret.yaml
+turret --daemon --config turret.toml
 ```
 
 Once running, the CLI talks to it automatically (see above). For
@@ -205,7 +205,7 @@ The corrector assumes the gimbal is at rest in the world between SETs,
 which is true for static mounts, parked vehicles, and pan-mode HOLD on
 moving vehicles. In actively-yawing flight with pan-mode PAN it can
 mistake vehicle motion for IMU drift; if that's your deployment,
-disable it with `gimbal.yaw_corrector_enabled: false` in `turret.yaml`
+disable it with `gimbal.yaw_corrector_enabled = false` in `turret.toml`
 (defaults to on).
 
 #### Future hardware paths
@@ -252,27 +252,27 @@ A clean run on a calibrated gimbal looks like:
 If the gimbal hasn't been calibrated yet, the failing samples make the
 bias obvious — that's a good cue to run `{"cmd":"calibrate_yaw"}`.
 
-**Configuration** (`turret.yaml`):
-```yaml
-device:
-  path: auto
+**Configuration** (`turret.toml`):
+```toml
+[device]
+path = "auto"
 
-ipc:
-  socket_path: /tmp/turret.sock
+[ipc]
+socket_path = "/tmp/turret.sock"
 
-mavlink:
-  enabled: true
-  transport: udp
-  bind_addr: 127.0.0.1
-  udp_port: 14550
-  sysid: 1
-  compid: 154
+[mavlink]
+enabled = true
+transport = "udp"
+bind_addr = "127.0.0.1"
+udp_port = 14550
+sysid = 1
+compid = 154
 
-gimbal:
-  yaw_corrector_enabled: true
+[gimbal]
+yaw_corrector_enabled = true
 ```
 
-**Priority System**: MAVLink autopilot (highest) > GCS > Unix socket > CLI (lowest)
+**Priority System**: MAVLink autopilot (highest) > GCS > Unix socket (lowest)
 
 **Daemon behavior**:
 - 1 Hz `HEARTBEAT` (advertises `MAV_TYPE_GIMBAL` on `MAV_COMP_ID_GIMBAL`)

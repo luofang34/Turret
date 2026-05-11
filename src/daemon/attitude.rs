@@ -165,7 +165,7 @@ pub async fn attitude_poll_loop(
         // calibration offset. See `daemon::yaw_corrector` for the
         // math + non-goals. No-op until at least one `set` has gone
         // through the arbitrator. Skipped entirely when the operator
-        // has set `gimbal.yaw_corrector_enabled: false` in the YAML
+        // has set `gimbal.yaw_corrector_enabled = false` in the TOML
         // (typical for actively-yawing flight in pan-mode PAN).
         let last_command = state_manager.get_last_command();
         let last_sp_yaw = last_command.as_ref().and_then(|c| c.yaw);
