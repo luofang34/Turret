@@ -23,10 +23,10 @@ pub enum Error {
     #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
 
-    /// YAML configuration parse / serialization failure.
+    /// TOML configuration parse failure.
     #[cfg(feature = "daemon")]
     #[error("config: {0}")]
-    Config(#[from] serde_yaml_ng::Error),
+    Config(#[from] toml::de::Error),
 
     /// JSON serialization / parse failure (IPC wire format).
     #[cfg(feature = "daemon")]

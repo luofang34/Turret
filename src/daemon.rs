@@ -21,8 +21,8 @@
 //!
 //! Two consumption modes are supported:
 //!
-//! 1. **The `turret` binary** — `run_daemon(Some("turret.yaml".into()))`
-//!    loads YAML config, opens an auto-detected STorM32, spawns IPC +
+//! 1. **The `turret` binary** — `run_daemon(Some("turret.toml".into()))`
+//!    loads TOML config, opens an auto-detected STorM32, spawns IPC +
 //!    MAVLink + reconnect, and blocks on `SIGINT` / `SIGTERM`.
 //! 2. **Embedded** — your own binary keeps full control of the tokio
 //!    runtime and supplies its own [`crate::gimbal::GimbalDevice`] (a
@@ -147,12 +147,11 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 /// Main daemon entry point
 pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()> {
-    // Load configuration
-    let config = if let Some(path) = config_path {
-        DaemonConfig::load_or_default(path)
-    } else {
-        DaemonConfig::load_or_default("turret.yaml")
-    };
+    // Load configuration. Missing default `turret.toml` is fine
+    // (first run on a fresh install picks up built-in defaults);
+    // missing `--config foo.toml` is an error (the operator asked for
+    // that specific file); malformed TOML is always an error.
+    let config = DaemonConfig::load_for_startup(config_path.as_deref())?;
 
     info!("Daemon configuration loaded");
     info!("  Device: {}", config.device.path);
@@ -257,7 +256,7 @@ pub async fn run_daemon(config_path: Option<String>) -> crate::error::Result<()>
         let corrector = config
             .gimbal
             .yaw_corrector_enabled
-            .then(|| crate::daemon::yaw_corrector::YawCorrector::new(0.0));
+            .then(crate::daemon::yaw_corrector::YawCorrector::new);
         let tx = attitude_tx.clone();
         spawn_critical(&mut tasks, "attitude-poll", &task_died, async move {
             attitude::attitude_poll_loop(gimbal, state, notify, corrector, tx).await;
@@ -378,7 +377,7 @@ fn cleanup_ipc_socket(path: &str) {
 /// Hot-plug recovery: wait until the attitude poll loop reports the device
 /// is silent, then keep retrying detection until it comes back.
 ///
-/// `configured_path` is whatever the user wrote in the YAML — `"auto"` means
+/// `configured_path` is whatever the user wrote in the config — `"auto"` means
 /// rescan via `DeviceScanner`, anything else is a fixed path. We always
 /// honor that knob; if the user pinned `/dev/ttyACM0` we don't silently
 /// switch to a different device just because something else is plugged in.

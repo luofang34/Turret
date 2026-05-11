@@ -8,7 +8,7 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/turret
-ExecStart=/usr/local/bin/turret --daemon --config /etc/turret/turret.yaml
+ExecStart=/usr/local/bin/turret --daemon --config /etc/turret/turret.toml
 Restart=always
 RestartSec=5
 

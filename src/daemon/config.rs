@@ -1,28 +1,40 @@
-//! YAML-backed daemon configuration. Loaded from `turret.yaml` on
-//! startup; falls back to [`DaemonConfig::default`] if the file is
-//! missing or malformed.
+//! TOML-backed daemon configuration. Loaded from `turret.toml` on
+//! startup via [`DaemonConfig::load_for_startup`]: a missing *default*
+//! file produces built-in defaults; an explicit `--config` path or any
+//! parse / I/O error fails loud rather than silently falling back.
+//!
+//! TOML matches the format used for `calibration.toml` and the
+//! project's own `Cargo.toml`, so the daemon ships a single parser
+//! across every config surface.
 
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 
-/// Default `bind_addr` if the YAML omits it: `127.0.0.1` (loopback only).
+/// Default `bind_addr` if the TOML omits it: `127.0.0.1` (loopback only).
 ///
 /// Embedded products inherit this default — companion-on-network setups
 /// (autopilot on a different host than the gimbal manager, GCS on a
 /// laptop talking to a Pi) must opt into a wider bind explicitly with
-/// `mavlink.bind_addr: 0.0.0.0` (or a specific interface address) in
-/// `turret.yaml`.
+/// `bind_addr = "0.0.0.0"` (or a specific interface address) under the
+/// `[mavlink]` table in `turret.toml`.
 ///
 /// Earlier versions defaulted to `0.0.0.0`. Existing deployments that
 /// relied on the broad bind will see the daemon stop responding to
-/// off-host MAVLink traffic until the YAML is updated; the change is
-/// called out in the CHANGELOG as a breaking config default.
+/// off-host MAVLink traffic until the config is updated; the change
+/// is called out in the CHANGELOG as a breaking config default.
 fn default_bind_addr() -> IpAddr {
     IpAddr::V4(Ipv4Addr::LOCALHOST)
 }
 
 /// Top-level daemon config shape — one section per long-lived component.
+///
+/// There is no `logging` section: tracing-subscriber is set up before
+/// the daemon loads `turret.toml` (the CLI's `-v / -vv / -vvv` controls
+/// the default floor, `RUST_LOG` tunes per-target filters). A TOML
+/// knob would change behavior only after the subscriber has already
+/// been installed, which silently does nothing — see commit history
+/// if reconsidering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
     /// Serial device selection.
@@ -31,8 +43,6 @@ pub struct DaemonConfig {
     pub ipc: IpcConfig,
     /// MAVLink Gimbal Manager settings.
     pub mavlink: MavlinkConfig,
-    /// Tracing subscriber settings.
-    pub logging: LoggingConfig,
     /// Command arbitration tuning (priority + per-source rate limit).
     #[serde(default)]
     pub arbitrator: ArbitratorConfig,
@@ -77,10 +87,10 @@ impl Default for GimbalConfig {
 
 /// Command arbitrator tuning.
 ///
-/// Today this carries only the per-source rate limit. Priority itself is
-/// hard-coded into [`crate::daemon::models::ControlSource::priority`] —
-/// raising sysid-1 (autopilot) above other MAVLink components above IPC
-/// above CLI is a policy choice the YAML doesn't override.
+/// Today this carries only the per-source rate limit. Priority itself
+/// is hard-coded into [`crate::daemon::models::ControlSource::priority`]
+/// — raising sysid-1 (autopilot) above other MAVLink components above
+/// IPC is a policy choice the config doesn't override.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct ArbitratorConfig {
     /// Minimum interval between commands from the *same* `ControlSource`,
@@ -181,14 +191,6 @@ impl Default for GimbalLimits {
     }
 }
 
-/// Tracing subscriber knob. The CLI's `-v / -vv / -vvv` flag overrides
-/// this for command-line usage; the daemon honors only this field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoggingConfig {
-    /// Log level — `"trace" / "debug" / "info" / "warn" / "error"`.
-    pub level: String,
-}
-
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -207,9 +209,6 @@ impl Default for DaemonConfig {
                 compid: 154, // MAV_COMP_ID_GIMBAL
                 limits: GimbalLimits::default(),
             },
-            logging: LoggingConfig {
-                level: "info".to_string(),
-            },
             arbitrator: ArbitratorConfig::default(),
             gimbal: GimbalConfig::default(),
         }
@@ -217,28 +216,54 @@ impl Default for DaemonConfig {
 }
 
 impl DaemonConfig {
-    /// Load configuration from YAML file
+    /// Load configuration from a TOML file.
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> crate::error::Result<Self> {
         let contents = std::fs::read_to_string(path)?;
-        let config: DaemonConfig = serde_yaml_ng::from_str(&contents)?;
+        let config: DaemonConfig = toml::from_str(&contents)?;
         Ok(config)
     }
 
-    /// Save configuration to YAML file
+    /// Save configuration to a TOML file. The serializer error is
+    /// distinct from [`toml::de::Error`] and isn't part of the
+    /// public [`crate::error::Error`] enum; wrap it through
+    /// `io::Error::other` for the rare write path.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> crate::error::Result<()> {
-        let contents = serde_yaml_ng::to_string(self)?;
+        let contents = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(path, contents)?;
         Ok(())
     }
 
-    /// Load configuration from file if it exists, otherwise use defaults
-    pub fn load_or_default<P: AsRef<Path>>(path: P) -> Self {
+    /// Load configuration for daemon startup.
+    ///
+    /// Semantics:
+    /// - If `explicit_path` is `Some(p)` the path was supplied via
+    ///   `--config`. A missing file is an error — the operator asked
+    ///   for *this* file, not the default location.
+    /// - If `explicit_path` is `None` the daemon falls back to the
+    ///   conventional `turret.toml` in the working directory. A
+    ///   missing file silently produces defaults; this is the normal
+    ///   first-run path.
+    ///
+    /// Parse errors (malformed TOML, type mismatch) and other I/O
+    /// errors (permission denied, etc.) always propagate. A typo in
+    /// `turret.toml` must never silently degrade to defaults — that
+    /// risk-masks `device.path = "auto"` and a wide-open IPC socket
+    /// the operator didn't ask for.
+    pub fn load_for_startup(explicit_path: Option<&str>) -> crate::error::Result<Self> {
+        const DEFAULT_PATH: &str = "turret.toml";
+        let (path, explicit) = match explicit_path {
+            Some(p) => (p, true),
+            None => (DEFAULT_PATH, false),
+        };
         match Self::load_from_file(path) {
-            Ok(config) => config,
-            Err(e) => {
-                tracing::warn!("Failed to load config file: {}. Using defaults.", e);
-                Self::default()
+            Ok(config) => Ok(config),
+            Err(crate::error::Error::Io(e))
+                if e.kind() == std::io::ErrorKind::NotFound && !explicit =>
+            {
+                tracing::info!("No config file at {}; using built-in defaults", path);
+                Ok(Self::default())
             }
+            Err(e) => Err(e),
         }
     }
 }
@@ -248,56 +273,111 @@ impl DaemonConfig {
 mod tests {
     use super::*;
 
-    /// Minimal YAML used by the corrector-knob tests — contains only the
-    /// fields the parser actually requires (no `#[serde(default)]` on
-    /// them), so we can exercise the `gimbal` section in isolation.
-    fn yaml_without_gimbal_section() -> &'static str {
+    /// Minimal TOML used by the corrector-knob tests — contains only
+    /// the fields the parser actually requires (no `#[serde(default)]`
+    /// on them), so we can exercise the `[gimbal]` table in isolation.
+    fn toml_without_gimbal_section() -> &'static str {
         r#"
-device:
-  path: auto
-ipc:
-  socket_path: /tmp/turret.sock
-mavlink:
-  enabled: true
-  udp_port: 14550
-  sysid: 1
-  compid: 154
-logging:
-  level: info
+[device]
+path = "auto"
+[ipc]
+socket_path = "/tmp/turret.sock"
+[mavlink]
+enabled = true
+udp_port = 14550
+sysid = 1
+compid = 154
 "#
     }
 
     #[test]
     fn yaw_corrector_enabled_defaults_to_true_when_section_omitted() {
-        // Operators upgrading from a pre-knob YAML must keep the
+        // Operators upgrading from a pre-knob config must keep the
         // existing default-on behavior — no surprise disable.
-        let cfg: DaemonConfig = serde_yaml_ng::from_str(yaml_without_gimbal_section()).unwrap();
+        let cfg: DaemonConfig = toml::from_str(toml_without_gimbal_section()).unwrap();
         assert!(cfg.gimbal.yaw_corrector_enabled);
     }
 
     #[test]
     fn yaw_corrector_enabled_defaults_to_true_when_section_empty() {
-        // A `gimbal: {}` section parses cleanly and inherits the
-        // default — covers the case where an operator added the section
-        // header for a future field but didn't set the corrector flag.
-        let mut yaml = String::from(yaml_without_gimbal_section());
-        yaml.push_str("gimbal: {}\n");
-        let cfg: DaemonConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        // An empty `[gimbal]` table parses cleanly and inherits the
+        // default — covers the case where an operator added the header
+        // for a future field but didn't set the corrector flag.
+        let mut text = String::from(toml_without_gimbal_section());
+        text.push_str("[gimbal]\n");
+        let cfg: DaemonConfig = toml::from_str(&text).unwrap();
         assert!(cfg.gimbal.yaw_corrector_enabled);
     }
 
     #[test]
     fn yaw_corrector_enabled_can_be_explicitly_disabled() {
-        let mut yaml = String::from(yaml_without_gimbal_section());
-        yaml.push_str("gimbal:\n  yaw_corrector_enabled: false\n");
-        let cfg: DaemonConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        let mut text = String::from(toml_without_gimbal_section());
+        text.push_str("[gimbal]\nyaw_corrector_enabled = false\n");
+        let cfg: DaemonConfig = toml::from_str(&text).unwrap();
         assert!(!cfg.gimbal.yaw_corrector_enabled);
     }
 
     #[test]
     fn daemon_config_default_enables_corrector() {
-        // The non-YAML default path (used by `load_or_default` when the
-        // file is missing) must agree with the YAML-default behavior.
+        // The non-TOML default path (used by `load_for_startup` when
+        // the default `turret.toml` is absent) must agree with the
+        // file-default behavior.
         assert!(DaemonConfig::default().gimbal.yaw_corrector_enabled);
+    }
+
+    /// Build a temp directory we can `cd` to without races between
+    /// parallel tests poking at `turret.toml` in the package root.
+    fn temp_workdir() -> std::path::PathBuf {
+        let pid = std::process::id();
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let p = std::env::temp_dir().join(format!("turret-cfg-test-{pid}-{n}"));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn load_for_startup_explicit_missing_file_errors() {
+        // `--config /no/such/path.toml` must fail loudly. The
+        // operator asked for *that* file; substituting defaults
+        // would be a silent surprise.
+        let dir = temp_workdir();
+        let missing = dir.join("nope.toml");
+        let r = DaemonConfig::load_for_startup(Some(missing.to_str().unwrap()));
+        assert!(r.is_err(), "explicit missing file must error, got Ok");
+    }
+
+    #[test]
+    fn load_for_startup_default_missing_file_uses_defaults() {
+        // No `--config`, no `turret.toml` in CWD: built-in defaults
+        // is the right behavior (first run on a fresh install).
+        let dir = temp_workdir();
+        let prev = std::env::current_dir().unwrap();
+        // `set_current_dir` is process-wide; we restore in a deferred
+        // step so a panic doesn't leave the test runner in /tmp.
+        std::env::set_current_dir(&dir).unwrap();
+        let r = DaemonConfig::load_for_startup(None);
+        std::env::set_current_dir(prev).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        let cfg = r.expect("missing default file must produce defaults, not error");
+        assert_eq!(cfg.device.path, "auto");
+    }
+
+    #[test]
+    fn load_for_startup_malformed_toml_errors() {
+        // A typo in `turret.toml` must NOT silently degrade to
+        // defaults — that risk-masks `device.path = "auto"` and the
+        // default socket the operator didn't pick. Same shape
+        // regardless of whether the path was explicit.
+        let dir = temp_workdir();
+        let path = dir.join("bad.toml");
+        // Unclosed table header — TOML's parser rejects this with a
+        // line/col-tagged error.
+        std::fs::write(&path, b"[device\npath = \"auto\"\n").unwrap();
+        let r = DaemonConfig::load_for_startup(Some(path.to_str().unwrap()));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(r.is_err(), "malformed TOML must error, got Ok");
     }
 }

@@ -4,18 +4,14 @@
 //! with future per-axis trims.
 //!
 //! The file lives under `$XDG_STATE_HOME/turret/calibration.toml` (defaults
-//! to `~/.local/state/turret/`), separate from `turret.yaml` — yaml is
-//! human-edited config, the state file is daemon-managed runtime data
-//! that gets rewritten on every calibrate / trim. Mixing the two would
-//! mean the daemon overwrites the user's config file, which is exactly
-//! the surprise we want to avoid.
+//! to `~/.local/state/turret/`), separate from `turret.toml` —
+//! `turret.toml` is human-edited config, the state file is daemon-managed
+//! runtime data that gets rewritten on every calibrate / trim. Mixing
+//! the two would mean the daemon overwrites the user's config file,
+//! which is exactly the surprise we want to avoid.
 //!
-//! TOML rather than JSON for the wire format because the file's primary
-//! purpose is "machine-written, occasionally human-inspected": one float
-//! today, possibly a handful in the future, and a TOML body
-//! (`yaw_offset_deg = -4.5`) reads cleaner than a JSON object literal in
-//! a terminal. The dep cost is one small parser pulled in through the
-//! daemon feature only.
+//! TOML for the body matches `turret.toml` and `Cargo.toml` — a single
+//! parser across every config-shaped file in the project.
 //!
 //! Reads are lossy: a missing file, malformed TOML, or any I/O error
 //! falls back to `Calibration::default()` (zeroed) with a warn. The

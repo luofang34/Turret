@@ -10,7 +10,7 @@ use super::arbitrator::{Arbitrator, Outcome};
 use super::calibration::Calibration;
 use super::config::IpcConfig;
 use super::gimbal_handle::GimbalHandle;
-use super::models::{CommandMode, ControlSource, GimbalCommand, IpcCommand, IpcResponse, PanMode};
+use super::models::{ControlSource, GimbalCommand, IpcCommand, IpcResponse, PanMode};
 use super::state::StateManager;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -170,10 +170,9 @@ impl IpcServer {
             IpcCommand::Set { pitch, roll, yaw } => {
                 let gimbal_cmd = GimbalCommand::new(
                     ControlSource::UnixSocket(client_id),
-                    CommandMode::Position,
-                    Some(yaw),
                     Some(pitch),
                     Some(roll),
+                    Some(yaw),
                 );
                 execute_position(arbitrator, gimbal, gimbal_cmd, "set").await
             }
@@ -181,7 +180,6 @@ impl IpcServer {
             IpcCommand::Center => {
                 let gimbal_cmd = GimbalCommand::new(
                     ControlSource::UnixSocket(client_id),
-                    CommandMode::Position,
                     Some(0.0),
                     Some(0.0),
                     Some(0.0),
