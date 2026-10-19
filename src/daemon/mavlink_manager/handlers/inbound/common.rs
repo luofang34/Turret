@@ -3,11 +3,9 @@
 //! arbitrate-then-dispatch tail for SET_* handlers.
 //!
 //! All `pub(super)` so the per-message handler files (`set.rs`,
-//! `cmd_long.rs`) and the rate integrator (`rate.rs`) can call into
+//! `cmd_long.rs`) and the selected-rate adapter (`rate.rs`) can call into
 //! them without each duplicating the logic.
 
-use crate::daemon::arbitrator::Outcome;
-use crate::daemon::config::GimbalLimits;
 use crate::daemon::mavlink_manager::math::{clamp_axis, earth_to_vehicle_yaw_deg};
 use crate::daemon::mavlink_manager::RxCtx;
 use crate::daemon::models::GimbalCommand;
@@ -16,8 +14,7 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 /// How long an autopilot vehicle-attitude reading stays usable for
-/// earth-frame yaw transformation. After this, earth-frame commands
-/// fall back to vehicle frame with a warn.
+/// earth-frame yaw transformation. Expired context rejects that transform.
 pub(super) const VEHICLE_ATTITUDE_MAX_AGE: Duration = Duration::from_secs(1);
 
 /// True if a frame whose `target_system` / `target_component` we're
@@ -78,18 +75,6 @@ pub(super) fn gimbal_device_id_from_param7(p: f32) -> Option<u8> {
     Some(rounded as u8)
 }
 
-/// Clamp `(pitch, roll, yaw)` to the configured device limits and log
-/// per-axis if a clamp actually occurred. The order of the returned
-/// tuple matches the input order, not the order arguments appear in
-/// `GimbalCommand::new`.
-pub(super) fn clamp_pry(pitch: f32, roll: f32, yaw: f32, limits: &GimbalLimits) -> (f32, f32, f32) {
-    (
-        clamp_axis(pitch, limits.pitch_min_deg, limits.pitch_max_deg, "pitch"),
-        clamp_axis(roll, limits.roll_min_deg, limits.roll_max_deg, "roll"),
-        clamp_axis(yaw, limits.yaw_min_deg, limits.yaw_max_deg, "yaw"),
-    )
-}
-
 /// Translate a commanded yaw from whatever frame the GCS asked for into
 /// the vehicle frame the STorM32 needs.
 ///
@@ -100,122 +85,96 @@ pub(super) fn clamp_pry(pitch: f32, roll: f32, yaw: f32, limits: &GimbalLimits) 
 ///     the current vehicle heading from `AUTOPILOT_STATE_FOR_GIMBAL_DEVICE`
 ///     and pass the difference.
 ///
-/// If `YAW_IN_EARTH_FRAME` is requested but vehicle attitude is stale
-/// (no autopilot connected, or > [`VEHICLE_ATTITUDE_MAX_AGE`] since
-/// the last frame), fall back to vehicle frame with a one-line warn.
-/// Better honest degradation than silently rejecting the command.
+/// Missing or stale vehicle heading makes earth-frame input unavailable.
 pub(super) fn yaw_to_vehicle_frame(
     raw_yaw_deg: f32,
     flags: GimbalManagerFlags,
     ctx: &RxCtx<'_>,
     label: &str,
-) -> f32 {
-    if !flags.contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_EARTH_FRAME) {
-        return raw_yaw_deg;
+) -> Option<f32> {
+    let vehicle = flags.contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_VEHICLE_FRAME);
+    let earth = flags.contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_EARTH_FRAME);
+    if vehicle && earth {
+        return None;
+    }
+    if vehicle || (!earth && !flags.contains(GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_LOCK)) {
+        return Some(raw_yaw_deg);
     }
     match ctx.state.vehicle_yaw_deg(VEHICLE_ATTITUDE_MAX_AGE) {
-        Some(vehicle_yaw) => earth_to_vehicle_yaw_deg(raw_yaw_deg, vehicle_yaw),
+        Some(vehicle_yaw) => Some(earth_to_vehicle_yaw_deg(raw_yaw_deg, vehicle_yaw)),
         None => {
             warn!(
                 "{}: YAW_IN_EARTH_FRAME requested but no fresh AUTOPILOT_STATE — \
-                 falling back to vehicle-frame interpretation",
+                 rejecting unavailable coordinate transform",
                 label
             );
-            raw_yaw_deg
+            None
         }
     }
 }
 
 /// Common tail for SET_* handlers: arbitrate, then call the gimbal
 /// handle if the arbitrator accepted.
-pub(super) async fn dispatch_gimbal_command(command: GimbalCommand, ctx: &RxCtx<'_>, label: &str) {
-    match ctx.arbitrator.arbitrate(command) {
-        Outcome::Execute { pitch, roll, yaw } => {
-            match ctx.gimbal.set_attitude(pitch, roll, yaw).await {
-                Ok(()) => info!("Executed MAVLink {}", label),
-                Err(e) => error!("Failed to execute MAVLink {}: {}", label, e),
-            }
+pub(super) async fn dispatch_gimbal_command(
+    command: GimbalCommand,
+    ctx: &RxCtx<'_>,
+    label: &str,
+) -> bool {
+    match ctx.arbitrator.execute(command, ctx.gimbal).await {
+        Ok(progress) => {
+            info!(?progress, "Executed MAVLink {}", label);
+            true
         }
-        Outcome::Rejected => warn!("MAVLink {} rejected (lower priority)", label),
+        Err(error) => {
+            error!(%error, "MAVLink {} was not executed", label);
+            false
+        }
     }
+}
+
+/// This manager cannot transform horizon pitch/roll or execute retract/neutral flags.
+pub(super) fn position_flags_supported(flags: GimbalManagerFlags) -> bool {
+    !flags.intersects(
+        GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_ROLL_LOCK
+            | GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_PITCH_LOCK
+            | GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_RETRACT
+            | GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_NEUTRAL,
+    )
+}
+
+/// Angular-rate transforms require vehicle angular velocity, which is not supplied here.
+pub(super) fn rate_flags_supported(flags: GimbalManagerFlags) -> bool {
+    position_flags_supported(flags)
+        && !flags.intersects(
+            GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_LOCK
+                | GimbalManagerFlags::GIMBAL_MANAGER_FLAGS_YAW_IN_EARTH_FRAME,
+        )
+}
+
+/// Preserve omitted axes and reject earth-frame input without fresh vehicle state.
+pub(super) fn selected_position(
+    source: crate::daemon::models::ControlSource,
+    pitch: Option<f32>,
+    roll: Option<f32>,
+    yaw: Option<f32>,
+    flags: GimbalManagerFlags,
+    ctx: &RxCtx<'_>,
+) -> Option<GimbalCommand> {
+    if !position_flags_supported(flags) {
+        return None;
+    }
+    let yaw = match yaw {
+        Some(yaw) => Some(yaw_to_vehicle_frame(yaw, flags, ctx, "position")?),
+        None => None,
+    };
+    let limits = &ctx.config.limits;
+    Some(GimbalCommand::new(
+        source,
+        pitch.map(|v| clamp_axis(v, limits.pitch_min_deg, limits.pitch_max_deg, "pitch")),
+        roll.map(|v| clamp_axis(v, limits.roll_min_deg, limits.roll_max_deg, "roll")),
+        yaw.map(|v| clamp_axis(v, limits.yaw_min_deg, limits.yaw_max_deg, "yaw")),
+    ))
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn addressed_to_us_accepts_per_axis_broadcast_and_exact_match() {
-        // Both axes broadcast.
-        assert!(addressed_to_us(0, 0, 1, 154));
-        // sysid broadcast, compid exact.
-        assert!(addressed_to_us(0, 154, 1, 154));
-        // sysid exact, compid broadcast.
-        assert!(addressed_to_us(1, 0, 1, 154));
-        // Both exact.
-        assert!(addressed_to_us(1, 154, 1, 154));
-    }
-
-    #[test]
-    fn addressed_to_us_rejects_other_components_on_same_sysid() {
-        // Targeting the autopilot (compid 1) on the same vehicle must NOT
-        // be acted on by the gimbal manager — same-sysid component routing
-        // is exactly what the compid axis is for.
-        assert!(!addressed_to_us(1, 1, 1, 154));
-    }
-
-    #[test]
-    fn addressed_to_us_rejects_other_systems() {
-        assert!(!addressed_to_us(2, 154, 1, 154));
-        assert!(!addressed_to_us(2, 0, 1, 154));
-    }
-
-    #[test]
-    fn addressed_to_this_device_accepts_broadcast_and_exact_match() {
-        // 0 = broadcast across every gimbal device under any manager.
-        assert!(addressed_to_this_device(0, 154));
-        // Exact compid match.
-        assert!(addressed_to_this_device(154, 154));
-    }
-
-    #[test]
-    fn addressed_to_this_device_rejects_other_devices() {
-        // A different gimbal under another manager (compid 155) — drop
-        // silently rather than stealing motion meant for that gimbal.
-        assert!(!addressed_to_this_device(155, 154));
-        // The 1..=6 "non-MAVLink gimbal" range is explicitly someone
-        // else's slot — never us.
-        for non_mavlink in 1..=6u8 {
-            assert!(
-                !addressed_to_this_device(non_mavlink, 154),
-                "non-MAVLink gimbal id {} must not match our compid 154",
-                non_mavlink
-            );
-        }
-    }
-
-    #[test]
-    fn gimbal_device_id_from_param7_decodes_valid_byte() {
-        assert_eq!(gimbal_device_id_from_param7(0.0), Some(0));
-        assert_eq!(gimbal_device_id_from_param7(154.0), Some(154));
-        // GCS may emit an integer that survives an f32 round-trip with
-        // a tiny rounding error — the round() inside the helper
-        // recovers the right byte.
-        assert_eq!(gimbal_device_id_from_param7(154.0001), Some(154));
-        assert_eq!(gimbal_device_id_from_param7(255.0), Some(255));
-    }
-
-    #[test]
-    fn gimbal_device_id_from_param7_rejects_garbage() {
-        // NaN and negatives must read as "not for us" — a malformed GCS
-        // can't accidentally drive this gimbal because its broken
-        // param7 matched the broadcast path.
-        assert_eq!(gimbal_device_id_from_param7(f32::NAN), None);
-        assert_eq!(gimbal_device_id_from_param7(-1.0), None);
-        assert_eq!(gimbal_device_id_from_param7(f32::INFINITY), None);
-        assert_eq!(gimbal_device_id_from_param7(f32::NEG_INFINITY), None);
-        assert_eq!(gimbal_device_id_from_param7(256.0), None);
-        assert_eq!(gimbal_device_id_from_param7(1e9), None);
-    }
-}
+mod tests;

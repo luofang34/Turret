@@ -23,15 +23,41 @@ pub struct GimbalStateStore {
 }
 
 impl GimbalStateStore {
-    /// New store seeded with [`GimbalState::default`] (zero attitude,
+    /// New store seeded with [`GimbalState::default`] (unknown attitude,
     /// `measured_at: None`, no firmware string yet).
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Snapshot the current state.
-    pub fn snapshot(&self) -> GimbalState {
+    pub fn snapshot_cached(&self) -> GimbalState {
         self.inner.read().clone()
+    }
+
+    /// Mark retained measurements unavailable after a device connection changes.
+    pub fn invalidate(&self, epoch: u64) {
+        let mut state = self.inner.write();
+        state.measured_at = None;
+        state.pitch = None;
+        state.roll = None;
+        state.yaw = None;
+        state.connection_epoch = epoch;
+        state.firmware_version = None;
+    }
+
+    /// Replace the measurement snapshot with exactly the axes provided by the device.
+    pub fn update_observation(&self, sample: &crate::gimbal::DeviceObservation) {
+        let mut state = self.inner.write();
+        if sample.epoch != state.connection_epoch {
+            return;
+        }
+        state.pitch = sample.angles.pitch.map(|v| v.as_radians().to_degrees());
+        state.roll = sample.angles.roll.map(|v| v.as_radians().to_degrees());
+        state.yaw = sample.angles.yaw.map(|v| v.as_radians().to_degrees());
+        state.measured_at = sample
+            .sampled_at
+            .map(|sampled| sampled.elapsed())
+            .and_then(|age| std::time::SystemTime::now().checked_sub(age));
     }
 
     /// Record a fresh attitude measurement from the device.

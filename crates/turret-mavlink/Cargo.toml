@@ -1,0 +1,13 @@
+[package]
+name = "turret-mavlink"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "GPL-3.0"
+description = "Allocation-free MAVLink gimbal-manager client and camera payload policy"
+
+[dependencies]
+turret-core = { path = "../turret-core" }
+
+[lints]
+workspace = true

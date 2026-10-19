@@ -9,58 +9,41 @@
 //! for [`Storm32Gimbal`] so callers of the library trait never need to name
 //! the submodules directly.
 
-#[path = "storm32_rc/commands.rs"]
 mod commands;
-#[path = "storm32_rc/driver.rs"]
 mod driver;
-#[path = "storm32_rc/error.rs"]
 mod error;
-#[path = "storm32_rc/frame.rs"]
 mod frame;
 
 pub use driver::{GimbalAngles, GimbalStatus, Storm32Gimbal, Storm32RC};
 pub use error::{Result, Storm32Error};
 pub use frame::{RCCommand, RCMessage};
 
-impl crate::gimbal::GimbalDevice for Storm32Gimbal {
-    fn protocol_name(&self) -> &'static str {
-        "STorM32 RC Commands"
-    }
+mod capability;
+mod payload;
+pub use capability::storm32_capabilities;
 
-    fn set_attitude(&mut self, pitch: f32, roll: f32, yaw: f32) -> crate::error::Result<()> {
-        self.set_angles(pitch, roll, yaw)?;
-        Ok(())
-    }
+/// Explicit protocol-specific operations outside the portable payload command set.
+#[derive(Debug, Clone, Copy)]
+pub enum Storm32Action {
+    /// STorM32 RC pan-mode byte, validated against the device command domain.
+    PanMode(u8),
+    /// STorM32 stabilization standby state.
+    Standby(bool),
+}
 
-    fn get_attitude(&mut self) -> crate::error::Result<crate::gimbal::Attitude> {
-        self.update_status()?;
-        let status = self.get_status();
-        Ok(crate::gimbal::Attitude {
-            pitch: status.pv.pitch,
-            roll: status.pv.roll,
-            yaw: status.pv.yaw,
-        })
-    }
-
-    fn set_pan_mode(&mut self, mode: u8) -> crate::error::Result<()> {
-        Storm32Gimbal::set_pan_mode(self, mode)?;
-        Ok(())
-    }
-
-    fn set_standby(&mut self, enabled: bool) -> crate::error::Result<()> {
-        Storm32Gimbal::set_standby(self, enabled)?;
-        Ok(())
-    }
-
-    fn get_version(&mut self) -> crate::error::Result<String> {
-        Ok(Storm32Gimbal::get_version(self)?)
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
+impl Storm32Gimbal {
+    /// Execute a protocol-specific action under the same actual-write deadline.
+    pub fn execute_extension_blocking(
+        &mut self,
+        action: Storm32Action,
+        send_before: std::time::Instant,
+    ) -> crate::Result<()> {
+        self.write_deadline = Some(send_before);
+        let result = match action {
+            Storm32Action::PanMode(mode) => self.set_pan_mode_blocking(mode),
+            Storm32Action::Standby(enabled) => self.set_standby_blocking(enabled),
+        };
+        self.write_deadline = None;
+        Ok(result?)
     }
 }

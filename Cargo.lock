@@ -790,6 +790,29 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "turret-core",
+]
+
+[[package]]
+name = "turret-core"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "turret-dji"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "turret-core",
+]
+
+[[package]]
+name = "turret-mavlink"
+version = "0.1.0"
+dependencies = [
+ "turret-core",
 ]
 
 [[package]]

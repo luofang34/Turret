@@ -1,0 +1,14 @@
+[package]
+name = "turret-dji"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0"
+description = "Bounded DJI payload protocol for Turret"
+
+[dependencies]
+turret-core = { path = "../turret-core" }
+thiserror = { version = "2", default-features = false }
+
+[lints]
+workspace = true

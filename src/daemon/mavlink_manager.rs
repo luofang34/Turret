@@ -3,12 +3,10 @@
 //! Per-message frame logic and the broadcast loops live in a private
 //! `handlers` submodule alongside this file.
 
-#[path = "mavlink_manager/handlers.rs"]
 mod handlers;
 // `math` carries pure helpers (wrap_180, earth↔body yaw, quaternion).
 // Visible to the rest of the daemon so the yaw corrector can share
 // `wrap_180_deg` without duplicating it.
-#[path = "mavlink_manager/math.rs"]
 pub(crate) mod math;
 
 use super::arbitrator::Arbitrator;
@@ -130,7 +128,7 @@ impl MavlinkManager {
     pub async fn start(
         self,
         config: MavlinkConfig,
-        attitude_rx: tokio::sync::broadcast::Receiver<crate::daemon::attitude::AttitudeTick>,
+        attitude_rx: tokio::sync::broadcast::Receiver<Arc<crate::daemon::attitude::AttitudeTick>>,
     ) -> crate::error::Result<()> {
         match config.transport {
             Transport::Udp => self.start_udp(config, attitude_rx).await,
@@ -142,7 +140,7 @@ impl MavlinkManager {
     async fn start_udp(
         self,
         config: MavlinkConfig,
-        attitude_rx: tokio::sync::broadcast::Receiver<crate::daemon::attitude::AttitudeTick>,
+        attitude_rx: tokio::sync::broadcast::Receiver<Arc<crate::daemon::attitude::AttitudeTick>>,
     ) -> crate::error::Result<()> {
         let bind_addr = SocketAddr::new(config.bind_addr, config.udp_port);
         info!("Starting MAVLink manager on UDP {}", bind_addr);
@@ -150,59 +148,30 @@ impl MavlinkManager {
         let socket = Arc::new(UdpSocket::bind(bind_addr).await?);
         info!("MAVLink UDP socket bound to {}", bind_addr);
 
-        // 1 Hz HEARTBEAT — announces us as MAV_TYPE_GIMBAL so any GCS that
-        // hears the packet discovers the gimbal manager.
-        {
-            let socket = socket.clone();
-            let peers = self.peers.clone();
-            let seq = self.seq.clone();
-            let config = config.clone();
-            tokio::spawn(async move {
-                handlers::heartbeat_loop(socket, peers, seq, config).await;
-            });
-        }
+        self.start_on_socket(config, attitude_rx, socket).await
+    }
 
-        // 5 Hz GIMBAL_MANAGER_STATUS — keeps GCSs in sync with primary /
-        // secondary control ownership and gimbal device id.
-        {
-            let socket = socket.clone();
-            let peers = self.peers.clone();
-            let seq = self.seq.clone();
-            let state = self.state_manager.clone();
-            let config = config.clone();
-            let start_time = self.start_time;
-            tokio::spawn(async move {
-                handlers::publish_status_loop(socket, peers, seq, state, config, start_time).await;
-            });
+    /// Serve a pre-bound socket; the caller can select an ephemeral port without a bind race.
+    /// All broadcast futures share this lifetime and stop when the owner is cancelled.
+    pub async fn start_on_socket(
+        self,
+        config: MavlinkConfig,
+        attitude_rx: tokio::sync::broadcast::Receiver<Arc<crate::daemon::attitude::AttitudeTick>>,
+        socket: Arc<UdpSocket>,
+    ) -> crate::error::Result<()> {
+        tokio::select! {
+            result = self.receive_loop(&config, &socket) => result,
+            () = handlers::heartbeat_loop(socket.clone(), self.peers.clone(), self.seq.clone(), config.clone()) => Ok(()),
+            () = handlers::publish_status_loop(socket.clone(), self.peers.clone(), self.seq.clone(), self.state_manager.clone(), config.clone(), self.start_time) => Ok(()),
+            () = handlers::attitude_broadcast_loop(socket.clone(), self.peers.clone(), self.seq.clone(), config.clone(), self.start_time, attitude_rx) => Ok(()),
         }
+    }
 
-        // GIMBAL_DEVICE_ATTITUDE_STATUS broadcast — subscribes to the
-        // daemon's attitude broadcast channel and emits one MAVLink
-        // frame per successful poll. The poll itself, the failure
-        // counter, the reconnect signaling, and the yaw drift
-        // corrector all live in `daemon::attitude::attitude_poll_loop`,
-        // which runs unconditionally so an `mavlink.enabled: false`
-        // deployment still gets fresh state and a working hot-unplug
-        // path.
-        {
-            let socket = socket.clone();
-            let peers = self.peers.clone();
-            let seq = self.seq.clone();
-            let config = config.clone();
-            let start_time = self.start_time;
-            tokio::spawn(async move {
-                handlers::attitude_broadcast_loop(
-                    socket,
-                    peers,
-                    seq,
-                    config,
-                    start_time,
-                    attitude_rx,
-                )
-                .await;
-            });
-        }
-
+    async fn receive_loop(
+        &self,
+        config: &MavlinkConfig,
+        socket: &Arc<UdpSocket>,
+    ) -> crate::error::Result<()> {
         // Main receive loop
         let mut buf = [0u8; 1024];
         let gimbal = self.gimbal.clone();
@@ -228,7 +197,7 @@ impl MavlinkManager {
                         Ok((header, msg)) => {
                             debug!("Received MAVLink message: {:?}", msg);
                             let ctx = RxCtx {
-                                socket: &socket,
+                                socket,
                                 config: &mavlink_config,
                                 seq: &seq,
                                 state: &state,
@@ -255,93 +224,4 @@ impl MavlinkManager {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    //! Cover the peer-map eviction. Same shape as
-    //! `daemon::state::tests::evict_for_insert_*` so a future maintainer
-    //! reading either one immediately recognizes the pattern.
-
-    use super::*;
-
-    fn addr(port: u16) -> SocketAddr {
-        SocketAddr::from(([127, 0, 0, 1], port))
-    }
-
-    #[test]
-    fn record_peer_inserts_and_refreshes() {
-        let mut peers = HashMap::new();
-        let t0 = Instant::now();
-        record_peer(&mut peers, addr(1000), t0);
-        assert_eq!(peers.len(), 1);
-        assert_eq!(peers[&addr(1000)], t0);
-
-        // Re-record the same peer at a later time → entry overwritten,
-        // map size unchanged.
-        let t1 = t0 + Duration::from_secs(1);
-        record_peer(&mut peers, addr(1000), t1);
-        assert_eq!(peers.len(), 1);
-        assert_eq!(peers[&addr(1000)], t1);
-    }
-
-    #[test]
-    fn record_peer_drops_ttl_expired_entries() {
-        let mut peers = HashMap::new();
-        let t0 = Instant::now();
-        record_peer(&mut peers, addr(1000), t0);
-        record_peer(&mut peers, addr(1001), t0);
-        assert_eq!(peers.len(), 2);
-
-        // Advance past the TTL and insert a fresh peer. The two old
-        // entries should be swept on the way in.
-        let t_late = t0 + PEER_TTL + Duration::from_secs(1);
-        record_peer(&mut peers, addr(1002), t_late);
-        assert_eq!(peers.len(), 1, "stale peers were not evicted");
-        assert!(peers.contains_key(&addr(1002)));
-    }
-
-    #[test]
-    fn record_peer_respects_hard_cap_under_burst() {
-        let mut peers = HashMap::new();
-        let t0 = Instant::now();
-        // Fill the map within the TTL window so the TTL pass evicts
-        // nothing — this exercises the hard-cap path.
-        for i in 0..MAX_PEERS as u16 {
-            record_peer(
-                &mut peers,
-                addr(2000 + i),
-                t0 + Duration::from_millis(i.into()),
-            );
-        }
-        assert_eq!(peers.len(), MAX_PEERS);
-        let oldest = addr(2000);
-        assert!(peers.contains_key(&oldest));
-
-        // One more insert. Cap holds, oldest goes.
-        let t_new = t0 + Duration::from_millis(MAX_PEERS as u64);
-        record_peer(&mut peers, addr(9999), t_new);
-        assert_eq!(peers.len(), MAX_PEERS);
-        assert!(
-            !peers.contains_key(&oldest),
-            "oldest should have been evicted"
-        );
-        assert!(peers.contains_key(&addr(9999)));
-    }
-
-    #[test]
-    fn record_peer_burst_stays_capped() {
-        // Sanity stress: insert many more than MAX_PEERS distinct
-        // addresses inside one TTL window. Final size must equal the
-        // cap, not the number of inserts.
-        let mut peers = HashMap::new();
-        let t0 = Instant::now();
-        let burst = MAX_PEERS * 5;
-        for i in 0..burst as u16 {
-            record_peer(
-                &mut peers,
-                addr(10_000 + i),
-                t0 + Duration::from_millis(i.into()),
-            );
-        }
-        assert_eq!(peers.len(), MAX_PEERS, "hard cap must hold under burst");
-    }
-}
+mod tests;

@@ -4,17 +4,16 @@
 //! Each handler enforces addressing + primary-control gating before
 //! decoding the message into a `GimbalCommand` and dispatching through
 //! the arbitrator (via [`super::common::dispatch_gimbal_command`]).
-//! NaN-position commands route to [`super::rate::apply_rate_increment`]
+//! NaN-position commands route to [`super::rate::dispatch_rate_command`]
 //! when at least one rate axis is active.
 
 use super::common::{
-    addressed_to_this_device, addressed_to_us, clamp_pry, dispatch_gimbal_command,
-    yaw_to_vehicle_frame,
+    addressed_to_this_device, addressed_to_us, dispatch_gimbal_command, selected_position,
 };
-use super::rate::{any_rate_active, apply_rate_increment};
+use super::rate::{any_rate_active, dispatch_rate_command};
 use crate::daemon::mavlink_manager::math::quaternion_wxyz_to_euler_deg;
 use crate::daemon::mavlink_manager::RxCtx;
-use crate::daemon::models::{ControlSource, GimbalCommand};
+use crate::daemon::models::ControlSource;
 use tracing::{debug, warn};
 
 pub(super) async fn on_set_attitude(
@@ -48,7 +47,7 @@ pub(super) async fn on_set_attitude(
     }
 
     // NaN in q means "ignore quaternion, use angular_velocity instead" per
-    // spec. Route to the rate→position integrator when the rate fields
+    // spec. Preserve selected rate semantics when the rate fields
     // carry usable data; otherwise drop (NaN-q + NaN-rate is a malformed
     // command that the GCS shouldn't send anyway).
     if m.q.iter().any(|c| c.is_nan()) {
@@ -58,9 +57,10 @@ pub(super) async fn on_set_attitude(
             m.angular_velocity_z.to_degrees(),
         );
         if any_rate_active(rates_deg_per_s) {
-            apply_rate_increment(
+            dispatch_rate_command(
                 ControlSource::Mavlink(sender_sysid),
                 rates_deg_per_s,
+                m.flags,
                 ctx,
                 "SET_ATTITUDE rate",
             )
@@ -71,16 +71,17 @@ pub(super) async fn on_set_attitude(
         return;
     }
 
-    // TODO: honor RETRACT / NEUTRAL shortcuts.
-    let (pitch_deg, roll_deg, yaw_deg) = quaternion_wxyz_to_euler_deg(m.q);
-    let yaw_deg = yaw_to_vehicle_frame(yaw_deg, m.flags, ctx, "SET_ATTITUDE");
-    let (pitch, roll, yaw) = clamp_pry(pitch_deg, roll_deg, yaw_deg, &ctx.config.limits);
-    let command = GimbalCommand::new(
+    let (pitch, roll, yaw) = quaternion_wxyz_to_euler_deg(m.q);
+    let Some(command) = selected_position(
         ControlSource::Mavlink(sender_sysid),
         Some(pitch),
         Some(roll),
         Some(yaw),
-    );
+        m.flags,
+        ctx,
+    ) else {
+        return;
+    };
     dispatch_gimbal_command(command, ctx, "SET_ATTITUDE").await;
 }
 
@@ -120,13 +121,14 @@ pub(super) async fn on_set_pitchyaw(
     if m.pitch.is_nan() && m.yaw.is_nan() {
         let rates_deg_per_s = (
             m.pitch_rate.to_degrees(),
-            0.0, // SET_PITCHYAW has no roll axis
+            f32::NAN, // This message does not address roll.
             m.yaw_rate.to_degrees(),
         );
         if any_rate_active(rates_deg_per_s) {
-            apply_rate_increment(
+            dispatch_rate_command(
                 ControlSource::Mavlink(sender_sysid),
                 rates_deg_per_s,
+                m.flags,
                 ctx,
                 "SET_PITCHYAW rate",
             )
@@ -137,30 +139,16 @@ pub(super) async fn on_set_pitchyaw(
         return;
     }
 
-    // NaN on a single axis = "ignore this axis" per the GMv2 spec, not
-    // "command 0°". Substitute the per-axis baseline (last commanded →
-    // last measured → 0). Roll has no field on this message at all, so
-    // it always uses the baseline — keeps an earlier `set roll=15` from
-    // being silently zeroed by a yaw-only SET_PITCHYAW.
-    let (base_pitch, base_roll, base_yaw) = ctx.state.axis_baseline();
-    let pitch_deg = if m.pitch.is_nan() {
-        base_pitch
-    } else {
-        m.pitch.to_degrees()
-    };
-    let yaw_deg = if m.yaw.is_nan() {
-        base_yaw
-    } else {
-        m.yaw.to_degrees()
-    };
-    let yaw_deg = yaw_to_vehicle_frame(yaw_deg, m.flags, ctx, "SET_PITCHYAW");
-    let (pitch, roll, yaw) = clamp_pry(pitch_deg, base_roll, yaw_deg, &ctx.config.limits);
-    let command = GimbalCommand::new(
+    let Some(command) = selected_position(
         ControlSource::Mavlink(sender_sysid),
-        Some(pitch),
-        Some(roll),
-        Some(yaw),
-    );
+        (!m.pitch.is_nan()).then(|| m.pitch.to_degrees()),
+        None,
+        (!m.yaw.is_nan()).then(|| m.yaw.to_degrees()),
+        m.flags,
+        ctx,
+    ) else {
+        return;
+    };
     dispatch_gimbal_command(command, ctx, "SET_PITCHYAW").await;
 }
 
@@ -204,16 +192,17 @@ pub(super) async fn on_set_manual(
     // Per spec: NaN angle = "ignore this axis, use rate instead". When
     // both pitch & yaw angles are NaN AND at least one rate is non-NaN/
     // non-zero, scale the normalized rate fields to deg/s and route
-    // through the rate→position integrator. Otherwise treat as a
+    // through the backend rate command. Otherwise treat as a
     // position command on whatever axes have non-NaN angles.
     if m.pitch.is_nan() && m.yaw.is_nan() {
         let pitch_rate = manual_rate_to_deg_per_s(m.pitch_rate);
         let yaw_rate = manual_rate_to_deg_per_s(m.yaw_rate);
-        let rates_deg_per_s = (pitch_rate, 0.0, yaw_rate);
+        let rates_deg_per_s = (pitch_rate, f32::NAN, yaw_rate);
         if any_rate_active(rates_deg_per_s) {
-            apply_rate_increment(
+            dispatch_rate_command(
                 ControlSource::Mavlink(sender_sysid),
                 rates_deg_per_s,
+                m.flags,
                 ctx,
                 "SET_MANUAL_CONTROL rate",
             )
@@ -224,97 +213,30 @@ pub(super) async fn on_set_manual(
         return;
     }
 
-    // Manual control uses normalized values (-1.0..=1.0). Scale to ±90°
-    // then clamp to the configured device limits in case those are
-    // tighter than ±90°. NaN on a single axis = "ignore this axis" per
-    // the GMv2 spec, not "command 0°" — substitute the per-axis baseline
-    // (last commanded → last measured → 0) the same way SET_PITCHYAW
-    // does. SET_MANUAL_CONTROL has no roll field so roll always uses
-    // the baseline.
-    let (base_pitch, base_roll, base_yaw) = ctx.state.axis_baseline();
-    let pitch_deg = if m.pitch.is_nan() {
-        base_pitch
-    } else {
-        m.pitch * 90.0
-    };
-    let yaw_deg = if m.yaw.is_nan() {
-        base_yaw
-    } else {
-        m.yaw * 90.0
-    };
-    let yaw_deg = yaw_to_vehicle_frame(yaw_deg, m.flags, ctx, "SET_MANUAL_CONTROL");
-    let (pitch, roll, yaw) = clamp_pry(pitch_deg, base_roll, yaw_deg, &ctx.config.limits);
-    // After normalize-then-clamp, the values are absolute degrees per
-    // axis — i.e. a position command. The rate path (NaN angles +
-    // non-zero rates above) routes through `apply_rate_increment`,
-    // which also integrates to a position command, so both branches
-    // produce a `GimbalCommand` the arbitrator can execute.
-    let command = GimbalCommand::new(
+    let Some(command) = selected_position(
         ControlSource::Mavlink(sender_sysid),
-        Some(pitch),
-        Some(roll),
-        Some(yaw),
-    );
+        (!m.pitch.is_nan()).then_some(m.pitch * 90.0),
+        None,
+        (!m.yaw.is_nan()).then_some(m.yaw * 90.0),
+        m.flags,
+        ctx,
+    ) else {
+        return;
+    };
     dispatch_gimbal_command(command, ctx, "SET_MANUAL_CONTROL").await;
 }
 
 /// Map a normalized stick-deflection rate (`-1.0..=1.0`, NaN ignored) to
 /// degrees-per-second using [`MANUAL_RATE_FULL_DEG_S`] as full-scale.
-/// NaN → 0 so a per-axis NaN simply contributes no rate (the
+/// NaN remains omitted so a per-axis NaN contributes no demand (the
 /// `any_rate_active` check decides whether the whole command is dropped).
 fn manual_rate_to_deg_per_s(rate_normalized: f32) -> f32 {
     if rate_normalized.is_nan() {
-        0.0
+        f32::NAN
     } else {
         rate_normalized * MANUAL_RATE_FULL_DEG_S
     }
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::float_cmp
-)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn manual_rate_full_stick_maps_to_full_scale_deg_per_s() {
-        assert_eq!(manual_rate_to_deg_per_s(1.0), MANUAL_RATE_FULL_DEG_S);
-        assert_eq!(manual_rate_to_deg_per_s(-1.0), -MANUAL_RATE_FULL_DEG_S);
-    }
-
-    #[test]
-    fn manual_rate_half_stick_maps_to_half_scale() {
-        assert_eq!(manual_rate_to_deg_per_s(0.5), MANUAL_RATE_FULL_DEG_S * 0.5);
-        assert_eq!(
-            manual_rate_to_deg_per_s(-0.25),
-            MANUAL_RATE_FULL_DEG_S * -0.25
-        );
-    }
-
-    #[test]
-    fn manual_rate_zero_maps_to_zero() {
-        assert_eq!(manual_rate_to_deg_per_s(0.0), 0.0);
-    }
-
-    #[test]
-    fn manual_rate_nan_maps_to_zero() {
-        // Per-axis NaN must contribute no rate so any_rate_active() can
-        // decide whether the whole command is a no-op based on the
-        // *other* axis.
-        assert_eq!(manual_rate_to_deg_per_s(f32::NAN), 0.0);
-    }
-
-    #[test]
-    fn manual_rate_passes_through_out_of_range_values() {
-        // Spec says -1..=1, but a buggy GCS may exceed that. Don't
-        // sanitize here — clamp_pry runs against the configured device
-        // limits later, which is the right place to enforce hardware
-        // bounds. Here, just preserve the linear scaling so debug logs
-        // can show what the GCS actually sent.
-        assert_eq!(manual_rate_to_deg_per_s(2.0), MANUAL_RATE_FULL_DEG_S * 2.0);
-    }
-}
+mod tests;

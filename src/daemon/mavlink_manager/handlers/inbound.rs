@@ -2,7 +2,7 @@
 //! [`MavMessage`] lands in [`handle_mavlink_message`], which fans out to
 //! one of the per-type handlers in the submodules below. All inbound
 //! logic — primary-control gating, addressing, frame-flag clamping,
-//! ACK shape, rate→position integration — lives under this module so
+//! ACK shape, and selected-axis rate dispatch — lives under this module so
 //! the periodic loops in [`super::loops`] don't see any of it.
 //!
 //! Submodule layout:
@@ -13,16 +13,12 @@
 //!   `_MANUAL_CONTROL` handlers.
 //! - [`cmd_long`] — `COMMAND_LONG` dispatch and per-command handlers
 //!   (PITCHYAW, CONFIGURE, REQUEST_MESSAGE).
-//! - [`rate`] — rate→position integrator shared by SET_* and
+//! - [`rate`] — selected-axis rate adapter shared by SET_* and
 //!   COMMAND_LONG rate paths.
 
-#[path = "inbound/cmd_long.rs"]
 mod cmd_long;
-#[path = "inbound/common.rs"]
 mod common;
-#[path = "inbound/rate.rs"]
 mod rate;
-#[path = "inbound/set.rs"]
 mod set;
 
 use super::build::send_gimbal_manager_information;
@@ -33,7 +29,6 @@ use std::net::SocketAddr;
 use tracing::debug;
 
 /// Dispatch a parsed inbound `MavMessage` to a per-type handler.
-#[tracing::instrument(level = "debug", skip(msg, ctx))]
 pub(in crate::daemon::mavlink_manager) async fn handle_mavlink_message(
     sender_sysid: u8,
     sender_compid: u8,
@@ -59,6 +54,7 @@ pub(in crate::daemon::mavlink_manager) async fn handle_mavlink_message(
                 ctx.config,
                 ctx.seq,
                 ctx.start_time,
+                ctx.gimbal,
             )
             .await;
         }

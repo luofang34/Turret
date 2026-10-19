@@ -6,5 +6,4 @@
 //! them when they want protocol-specific extensions via
 //! [`crate::gimbal::GimbalDevice::as_any_mut`].
 
-#[path = "protocols/storm32_rc.rs"]
 pub mod storm32_rc;

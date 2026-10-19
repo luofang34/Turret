@@ -1,3 +1,9 @@
 disallowed-types = [
     { path = "anyhow::Error", reason = "Use turret::Error throughout the package — including the bin. anyhow is no longer pulled in as a dependency at all; this guardrail prevents a regression." },
 ]
+allow-dbg-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-unwrap-in-tests = true

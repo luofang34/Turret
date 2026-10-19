@@ -1,60 +1,20 @@
-//! Shared in-memory daemon state.
-//!
-//! Split into five focused sub-stores under `daemon/state/`:
-//!
-//! - [`GimbalStateStore`] — the gimbal's reported state (measured
-//!   attitude, pan mode, standby flag, firmware string).
-//! - [`CommandStore`] — last-accepted command + per-source
-//!   rate-limit timestamps that gate new commands.
-//! - [`PrimaryStore`] — MAVLink primary / secondary control
-//!   ownership.
-//! - [`RateTracker`] — per-source rate-tick timestamps for the
-//!   rate→position integrator.
-//! - [`VehicleContext`] — autopilot vehicle-state snapshot
-//!   (currently just yaw heading).
-//!
-//! Each sub-store owns one lock and one concern. They're individually
-//! `Clone`able `Arc`-wrappers so any subsystem that only needs one
-//! slice can take ownership of just that slice without dragging the
-//! whole daemon state along.
-//!
-//! [`StateManager`] is the thin coordinator that composes all five.
-//! Existing consumers go through its delegating methods for backward
-//! compatibility; new code can reach into the sub-stores directly via
-//! the public fields.
+//! Daemon state for measurements, sent targets, ownership, and vehicle heading.
 
-#[path = "state/commands.rs"]
 pub mod commands;
-#[path = "state/gimbal.rs"]
 pub mod gimbal;
-#[path = "state/primary.rs"]
 pub mod primary;
-#[path = "state/rate.rs"]
-pub mod rate;
-#[path = "state/source_map.rs"]
 mod source_map;
-#[path = "state/vehicle.rs"]
 pub mod vehicle;
 
 pub use commands::CommandStore;
 pub use gimbal::GimbalStateStore;
 pub use primary::PrimaryStore;
-pub use rate::RateTracker;
 pub use vehicle::VehicleContext;
 
 use super::models::{ControlSource, GimbalCommand, GimbalState, PanMode, PrimaryControl};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// Thread-safe gimbal state manager. Coordinates the five focused
-/// sub-stores ([`GimbalStateStore`], [`CommandStore`], [`PrimaryStore`],
-/// [`RateTracker`], [`VehicleContext`]).
-///
-/// Each sub-store is `Clone` and shareable on its own — consumers that
-/// only need one slice (a future gimbal-state observer that doesn't
-/// care about arbitration, a primary-control admin tool that doesn't
-/// touch attitude) can reach into the named field directly. The
-/// delegating methods on `StateManager` keep existing call sites
-/// working unchanged.
+/// Shared state with independent measurement, command, and ownership stores.
 #[derive(Clone, Default)]
 pub struct StateManager {
     /// The gimbal's reported state.
@@ -63,14 +23,12 @@ pub struct StateManager {
     pub commands: CommandStore,
     /// MAVLink primary / secondary control ownership.
     pub primary: PrimaryStore,
-    /// Per-source rate-tick timestamps.
-    pub rate_tracker: RateTracker,
     /// Autopilot vehicle-state snapshot.
     pub vehicle: VehicleContext,
 }
 
 impl StateManager {
-    /// Construct a fresh state manager with default zero values and
+    /// Construct a fresh state manager with unknown observations and
     /// no per-source rate limit. Cheap to `clone()` — every sub-store
     /// is `Arc<RwLock<...>>` so all clones share the same buffers.
     pub fn new() -> Self {
@@ -86,7 +44,6 @@ impl StateManager {
             gimbal: GimbalStateStore::new(),
             commands: CommandStore::with_min_interval(interval),
             primary: PrimaryStore::new(),
-            rate_tracker: RateTracker::new(),
             vehicle: VehicleContext::new(),
         }
     }
@@ -113,8 +70,8 @@ impl StateManager {
     // -----------------------------------------------------------------
 
     /// Snapshot the current gimbal state.
-    pub fn get_state(&self) -> GimbalState {
-        self.gimbal.snapshot()
+    pub fn state_cached(&self) -> GimbalState {
+        self.gimbal.snapshot_cached()
     }
 
     /// Record a fresh attitude measurement from the device.
@@ -143,8 +100,7 @@ impl StateManager {
     /// Whether the daemon last commanded the gimbal into standby.
     /// Tracks toggles the daemon itself issues; not a poll of the
     /// device, so it can drift if some other host puts the gimbal
-    /// into standby out of band. Used by `GIMBAL_MANAGER_STATUS` to
-    /// advertise `RETRACT`.
+    /// into standby out of band.
     pub fn is_standby(&self) -> bool {
         self.gimbal.is_standby()
     }
@@ -154,8 +110,8 @@ impl StateManager {
     // -----------------------------------------------------------------
 
     /// Get the in-flight command.
-    pub fn get_last_command(&self) -> Option<GimbalCommand> {
-        self.commands.last()
+    pub fn last_command_cached(&self) -> Option<GimbalCommand> {
+        self.commands.last_sent_cached()
     }
 
     /// Run a command through arbitration: per-source rate limit first,
@@ -164,47 +120,31 @@ impl StateManager {
         self.commands.try_accept(command)
     }
 
-    /// Per-axis baseline for "this axis is not in the current command —
-    /// keep it where I last set it."
-    ///
-    /// MAVLink GMv2 lets a SET_PITCHYAW / DO_GIMBAL_MANAGER_PITCHYAW /
-    /// SET_MANUAL_CONTROL NaN-out an angle field to mean "ignore this
-    /// axis"; the same intent is encoded as `None` on a `GimbalCommand`
-    /// axis throughout the daemon (IPC `pitch` / `roll` / `yaw`
-    /// subcommands are also single-axis). Substituting `0.0` for an
-    /// omitted axis would silently snap that axis to center on every
-    /// partial command — the opposite of what the spec asks for.
-    ///
-    /// Per-axis resolution order:
-    ///   1. `last_command.<axis>` if `Some(_)`. The most recent
-    ///      *commanded* value is what the user intended; it survives
-    ///      IMU noise and yaw drift correction nudges.
-    ///   2. `measured.<axis>` if any successful poll has happened.
-    ///      Used when no command has touched this axis yet (e.g. the
-    ///      first partial command after boot).
-    ///   3. `0.0` as a final fallback (cold boot, no measurement, no
-    ///      command). Keeps behavior defined when nothing else is.
-    ///
-    /// Returned in `(pitch, roll, yaw)` order to match
-    /// `inbound::common::clamp_pry` and the arbitrator's
-    /// `Outcome::Execute`.
-    ///
-    /// This is the one cross-store read in the daemon: pulls from
-    /// both [`Self::commands`] and [`Self::gimbal`].
-    pub fn axis_baseline(&self) -> (f32, f32, f32) {
-        let last = self.commands.last();
-        let measured = self.gimbal.snapshot();
-        let measured_valid = measured.measured_at.is_some();
-        let pick = |last_axis: Option<f32>, measured_axis: f32| -> f32 {
-            last_axis
-                .or_else(|| measured_valid.then_some(measured_axis))
-                .unwrap_or(0.0)
+    /// Known selected-axis baseline; neither accepted targets nor missing data become zero.
+    pub fn axis_baseline_cached(&self) -> (Option<f32>, Option<f32>, Option<f32>) {
+        let last = self.commands.last_sent_cached();
+        let measured = self.gimbal.snapshot_cached();
+        let measured_valid = measured
+            .measured_at
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age <= Duration::from_secs(1));
+        let position = last
+            .as_ref()
+            .filter(|c| matches!(c.operation, super::models::CommandOperation::Position));
+        let pick = |sent: Option<f32>, measured: Option<f32>| {
+            sent.or_else(|| measured_valid.then_some(measured).flatten())
         };
         (
-            pick(last.as_ref().and_then(|c| c.pitch), measured.pitch),
-            pick(last.as_ref().and_then(|c| c.roll), measured.roll),
-            pick(last.as_ref().and_then(|c| c.yaw), measured.yaw),
+            pick(position.and_then(|c| c.pitch), measured.pitch),
+            pick(position.and_then(|c| c.roll), measured.roll),
+            pick(position.and_then(|c| c.yaw), measured.yaw),
         )
+    }
+
+    /// Invalidate feedback and targets which belong to a disconnected device.
+    pub fn clear_device(&self, epoch: u64) {
+        self.commands.clear_device();
+        self.gimbal.invalidate(epoch);
     }
 
     // -----------------------------------------------------------------
@@ -212,7 +152,7 @@ impl StateManager {
     // -----------------------------------------------------------------
 
     /// Current primary/secondary control ownership.
-    pub fn get_primary_control(&self) -> PrimaryControl {
+    pub fn primary_control_cached(&self) -> PrimaryControl {
         self.primary.get()
     }
 
@@ -228,34 +168,17 @@ impl StateManager {
     }
 
     // -----------------------------------------------------------------
-    // Rate tracker (per-source rate-tick timing)
-    // -----------------------------------------------------------------
-
-    /// Most recent rate-command timestamp for `source`, if any.
-    pub fn last_rate_tick(&self, source: &ControlSource) -> Option<Instant> {
-        self.rate_tracker.last_tick(source)
-    }
-
-    /// Mark `source` as having issued a rate command at `now`.
-    pub fn record_rate_tick(&self, source: ControlSource, now: Instant) {
-        self.rate_tracker.record_tick(source, now);
-    }
-
-    // -----------------------------------------------------------------
     // Cross-store cleanup
     // -----------------------------------------------------------------
 
     /// Drop the per-source tracking entries for `source`. Called by
     /// the IPC server's slot allocator on client disconnect so a
     /// future client claiming the same slot index inherits a clean
-    /// slate instead of the previous tenant's rate-limit timestamp /
-    /// rate-tick `dt` baseline.
+    /// slate instead of the previous tenant's rate-limit timestamp.
     pub fn clear_source(&self, source: &ControlSource) {
         self.commands.clear(source);
-        self.rate_tracker.clear(source);
     }
 }
 
 #[cfg(test)]
-#[path = "state/tests.rs"]
 mod tests;

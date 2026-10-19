@@ -22,6 +22,7 @@ pub struct CommandStore {
     /// The single in-flight command — what the gimbal is currently
     /// "supposed" to do.
     last_command: Arc<RwLock<Option<GimbalCommand>>>,
+    last_sent: Arc<RwLock<Option<GimbalCommand>>>,
     /// When each `ControlSource` last had a command accepted. Used by
     /// the rate-limit check; empty map + `min_interval == ZERO` means
     /// "no throttle". Bounded by the shared TTL + hard-cap eviction
@@ -44,14 +45,32 @@ impl CommandStore {
     pub fn with_min_interval(interval: Duration) -> Self {
         Self {
             last_command: Arc::new(RwLock::new(None)),
+            last_sent: Arc::new(RwLock::new(None)),
             last_command_at: Arc::new(RwLock::new(HashMap::new())),
             min_interval: interval,
         }
     }
 
     /// Get the in-flight command, if any.
-    pub fn last(&self) -> Option<GimbalCommand> {
+    pub fn last_cached(&self) -> Option<GimbalCommand> {
         self.last_command.read().clone()
+    }
+
+    /// Most recent command that was actually fully transmitted.
+    pub fn last_sent_cached(&self) -> Option<GimbalCommand> {
+        self.last_sent.read().clone()
+    }
+
+    /// Commit sent evidence only after the device boundary completed its write.
+    pub fn record_sent(&self, command: GimbalCommand) {
+        *self.last_sent.write() = Some(command);
+    }
+
+    /// Clear device-dependent evidence when a connection is replaced.
+    pub fn clear_device(&self) {
+        *self.last_command.write() = None;
+        *self.last_sent.write() = None;
+        self.last_command_at.write().clear();
     }
 
     /// Run a command through arbitration: per-source rate limit first,
@@ -62,19 +81,12 @@ impl CommandStore {
     /// The rate-limit check runs on its own lock so the (more contended)
     /// `last_command` lock isn't held across the time arithmetic.
     pub fn try_accept(&self, command: GimbalCommand) -> bool {
-        if !self.check_and_record_rate(&command.source) {
+        if !self.check_and_record_rate(&command.source, command.received_at) {
             return false;
         }
 
         let mut last_cmd = self.last_command.write();
 
-        // Accept iff:
-        //   1. No previous command, OR
-        //   2. Previous command is stale (older than 5 s — see
-        //      `GimbalCommand::is_stale`), OR
-        //   3. New command has strictly higher priority, OR
-        //   4. Same priority and strictly newer timestamp ("last
-        //      writer wins" within a priority class).
         let should_accept = match &*last_cmd {
             None => true,
             Some(prev) => {
@@ -84,7 +96,8 @@ impl CommandStore {
                     let new_priority = command.source.priority();
                     let prev_priority = prev.source.priority();
                     new_priority > prev_priority
-                        || (new_priority == prev_priority && command.timestamp > prev.timestamp)
+                        || (new_priority == prev_priority
+                            && command.received_at >= prev.received_at)
                 }
             }
         };
@@ -108,11 +121,10 @@ impl CommandStore {
     ///
     /// Map size is bounded by the TTL + hard-cap eviction in
     /// `super::source_map`.
-    fn check_and_record_rate(&self, source: &ControlSource) -> bool {
+    fn check_and_record_rate(&self, source: &ControlSource, now: Instant) -> bool {
         if self.min_interval.is_zero() {
             return true;
         }
-        let now = Instant::now();
         let mut map = self.last_command_at.write();
         evict_for_insert(&mut map, now);
         if let Some(prev) = map.get(source) {

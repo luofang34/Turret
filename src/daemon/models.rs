@@ -2,7 +2,7 @@
 //! arbitrator, state manager.
 
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 /// Pan-mode bytes that the STorM32 RC `CMD_SETPANMODE` command takes
 /// (0..=5). Each name describes the per-axis policy as `pitch | roll | yaw`,
@@ -65,8 +65,7 @@ pub enum ControlSource {
     /// IPC client connected to the Unix socket. The `u32` is an
     /// IPC-server-assigned client id, monotonic per daemon run.
     UnixSocket(u32),
-    /// MAVLink message originating from sysid `u8`. Sysid 1 is treated as
-    /// the autopilot and gets the highest priority.
+    /// MAVLink source identity; the number does not confer authority.
     Mavlink(u8),
 }
 
@@ -75,11 +74,7 @@ impl ControlSource {
     /// preempts a strictly lower one. Same-priority sources are ordered by
     /// timestamp ("last writer wins").
     pub fn priority(&self) -> u8 {
-        match self {
-            ControlSource::Mavlink(1) => 100,
-            ControlSource::Mavlink(_) => 50,
-            ControlSource::UnixSocket(_) => 20,
-        }
+        1
     }
 }
 
@@ -114,19 +109,15 @@ impl PrimaryControl {
     }
 }
 
-/// One inbound command on its way through the arbitrator. Always a
-/// position command — every rate-stream code path integrates to
-/// position before constructing one of these, so the arbitrator only
-/// sees absolute angles.
-///
-/// Per-axis `Option<f32>` lets a partial command leave an axis untouched
-/// (the IPC `pitch`/`roll`/`yaw` subcommands, MAVLink's
-/// `SET_PITCHYAW`/`SET_MANUAL_CONTROL` NaN-on-an-axis convention, etc.).
-/// Field order matches [`crate::gimbal::GimbalDevice::set_attitude`] so
-/// reading any chunk of arbitration code gives `(pitch, roll, yaw)`
-/// throughout instead of swapping mid-pipeline.
+/// One inbound operation with optional axes and an immutable local arrival time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GimbalCommand {
+    /// Operation semantics; angles are never silently interpreted as rates.
+    #[serde(default)]
+    pub operation: CommandOperation,
+    /// Local ingress instant; only this process may create execution deadlines.
+    #[serde(skip, default = "Instant::now")]
+    pub received_at: Instant,
     /// Where this command came from. Drives priority arbitration.
     pub source: ControlSource,
     /// Pitch axis — `None` means "leave alone".
@@ -140,14 +131,20 @@ pub struct GimbalCommand {
     pub timestamp: SystemTime,
 }
 
+/// Payload operation admitted by the host authority boundary.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub enum CommandOperation {
+    /// Absolute selected-axis positions, expressed in degrees.
+    #[default]
+    Position,
+    /// Selected-axis angular rates, expressed in degrees per second.
+    Rate,
+    /// The device's explicitly advertised recenter operation.
+    Recenter,
+}
+
 impl GimbalCommand {
-    /// Construct a position command stamped with the current time.
-    ///
-    /// Argument order matches
-    /// [`crate::gimbal::GimbalDevice::set_attitude`] and the
-    /// [`crate::daemon::arbitrator::Outcome::Execute`] field order —
-    /// the same `(pitch, roll, yaw)` shape from inbound decode through
-    /// hardware write.
+    /// Construct a selected-axis position command stamped with local arrival time.
     pub fn new(
         source: ControlSource,
         pitch: Option<f32>,
@@ -155,6 +152,8 @@ impl GimbalCommand {
         yaw: Option<f32>,
     ) -> Self {
         Self {
+            operation: CommandOperation::Position,
+            received_at: Instant::now(),
             source,
             pitch,
             roll,
@@ -163,34 +162,71 @@ impl GimbalCommand {
         }
     }
 
-    /// True if the command is older than 5 seconds — at which point the
-    /// arbitrator allows a lower-priority source to take over.
+    /// Derive the ingress policy from the preserved arrival time without renewing it.
+    pub fn timing(&self) -> crate::Result<super::gimbal_handle::HostCommandTiming> {
+        Ok(super::gimbal_handle::HostCommandTiming::local_ingress(
+            self.payload()?,
+            self.received_at,
+        ))
+    }
+
+    /// Original local deadline, preserved while waiting for queues and device I/O.
+    pub fn send_before(&self) -> Instant {
+        self.received_at + Duration::from_millis(100)
+    }
+
+    /// Whether the local write deadline has elapsed.
     pub fn is_stale(&self) -> bool {
-        if let Ok(elapsed) = self.timestamp.elapsed() {
-            elapsed.as_secs() > 5
-        } else {
-            true
+        Instant::now() >= self.send_before()
+    }
+
+    /// Convert one admitted operation into finite, typed payload intent.
+    pub fn payload(&self) -> crate::Result<turret_core::PayloadCommand> {
+        use turret_core::*;
+        let frame = ReferenceFrame::Vehicle;
+        match self.operation {
+            CommandOperation::Position => {
+                let angle = |v: Option<f32>| v.map(|v| Angle::radians(v.to_radians())).transpose();
+                Ok(PayloadCommand::GimbalPosition(GimbalPosition {
+                    angles: Axes {
+                        pitch: angle(self.pitch)?,
+                        roll: angle(self.roll)?,
+                        yaw: angle(self.yaw)?,
+                    },
+                    frame,
+                }))
+            }
+            CommandOperation::Rate => {
+                let rate = |v: Option<f32>| {
+                    v.map(|v| AngularRate::radians_per_second(v.to_radians()))
+                        .transpose()
+                };
+                Ok(PayloadCommand::GimbalRate(GimbalRate {
+                    rates: Axes {
+                        pitch: rate(self.pitch)?,
+                        roll: rate(self.roll)?,
+                        yaw: rate(self.yaw)?,
+                    },
+                    frame,
+                }))
+            }
+            CommandOperation::Recenter => Ok(PayloadCommand::Recenter),
         }
     }
 }
 
-/// Current gimbal state.
-///
-/// `yaw / pitch / roll` reflect the **measured** attitude polled from the
-/// hardware. They are written exclusively by the attitude poll loop in
-/// `mavlink_manager`; the arbitrator no longer copies commanded angles into
-/// these fields. `measured_at` distinguishes "no successful poll yet"
-/// (`None`, fields are still at their `Default::default()` zero) from
-/// "we measured this at time T" (`Some(t)`).
+/// Partial measured state; absent axes are unknown and never inferred from targets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GimbalState {
+    /// Connection epoch to which measurements belong.
+    pub connection_epoch: u64,
     /// Last measured yaw angle, in degrees. Meaningful only if
     /// `measured_at.is_some()`.
-    pub yaw: f32,
+    pub yaw: Option<f32>,
     /// Last measured pitch angle, in degrees. See [`Self::yaw`].
-    pub pitch: f32,
+    pub pitch: Option<f32>,
     /// Last measured roll angle, in degrees. See [`Self::yaw`].
-    pub roll: f32,
+    pub roll: Option<f32>,
     /// `Some(t)` once we've successfully read attitude from the device at
     /// least once; `None` until then.
     pub measured_at: Option<SystemTime>,
@@ -207,9 +243,10 @@ pub struct GimbalState {
 impl Default for GimbalState {
     fn default() -> Self {
         Self {
-            yaw: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
+            connection_epoch: 0,
+            yaw: None,
+            pitch: None,
+            roll: None,
             measured_at: None,
             pan_mode: PanMode::Off,
             standby: false,
@@ -222,9 +259,9 @@ impl Default for GimbalState {
 impl GimbalState {
     /// Record a fresh attitude measurement read off the gimbal hardware.
     pub fn update_measured_angles(&mut self, yaw: f32, pitch: f32, roll: f32) {
-        self.yaw = yaw;
-        self.pitch = pitch;
-        self.roll = roll;
+        self.yaw = Some(yaw);
+        self.pitch = Some(pitch);
+        self.roll = Some(roll);
         let now = SystemTime::now();
         self.measured_at = Some(now);
         self.last_update = now;
@@ -269,7 +306,7 @@ pub enum IpcCommand {
         /// Target yaw angle (degrees).
         yaw: f32,
     },
-    /// Move all three axes to zero.
+    /// Invoke the device's explicitly advertised recenter operation.
     Center,
     /// Read the cached gimbal state — does NOT poll the device.
     Status,
@@ -351,124 +388,4 @@ impl IpcResponse {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    //! Wire-format lockdowns for the IPC schema. These tests exist to
-    //! catch accidental renames — the daemon's JSON surface is a public
-    //! contract, and a typo in a `#[serde(rename_all = ...)]` attribute
-    //! would silently break every existing client.
-
-    use super::*;
-
-    #[test]
-    fn deserialize_set_command() {
-        let cmd: IpcCommand =
-            serde_json::from_str(r#"{"cmd":"set","pitch":10.0,"roll":-2.5,"yaw":42.0}"#).unwrap();
-        match cmd {
-            IpcCommand::Set { pitch, roll, yaw } => {
-                assert!((pitch - 10.0).abs() < 1e-6);
-                assert!((roll + 2.5).abs() < 1e-6);
-                assert!((yaw - 42.0).abs() < 1e-6);
-            }
-            other => panic!("expected Set, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn deserialize_pan_mode_uses_snake_case_discriminator() {
-        // Wire form is `pan_mode`, not `pan-mode` (kebab) or `panmode`
-        // (the `rename_all = "lowercase"` would-be default).
-        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd":"pan_mode","mode":3}"#).unwrap();
-        match cmd {
-            IpcCommand::PanMode { mode } => assert_eq!(mode, 3),
-            other => panic!("expected PanMode, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn deserialize_standby_uses_enabled_field() {
-        // Wire form is `enabled` (boolean state), not `enable` (verb).
-        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd":"standby","enabled":true}"#).unwrap();
-        match cmd {
-            IpcCommand::Standby { enabled } => assert!(enabled),
-            other => panic!("expected Standby, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn old_kebab_pan_mode_is_rejected() {
-        // The kebab-case form was the previous wire shape; rejecting it
-        // outright (rather than silently mis-parsing) helps clients
-        // discover the rename quickly.
-        let result: Result<IpcCommand, _> = serde_json::from_str(r#"{"cmd":"pan-mode","mode":3}"#);
-        assert!(
-            result.is_err(),
-            "kebab-case pan-mode must not parse (got {result:?})"
-        );
-    }
-
-    #[test]
-    fn old_enable_field_is_rejected() {
-        let result: Result<IpcCommand, _> =
-            serde_json::from_str(r#"{"cmd":"standby","enable":true}"#);
-        assert!(
-            result.is_err(),
-            "old `enable` field must not parse (got {result:?})"
-        );
-    }
-
-    #[test]
-    fn serialize_pan_mode_round_trips_to_snake_case() {
-        let cmd = IpcCommand::PanMode { mode: 2 };
-        let s = serde_json::to_string(&cmd).unwrap();
-        assert!(
-            s.contains(r#""cmd":"pan_mode""#),
-            "expected snake_case discriminator, got {s}"
-        );
-        assert!(s.contains(r#""mode":2"#), "got {s}");
-    }
-
-    #[test]
-    fn serialize_standby_round_trips_to_enabled_field() {
-        let cmd = IpcCommand::Standby { enabled: false };
-        let s = serde_json::to_string(&cmd).unwrap();
-        assert!(s.contains(r#""cmd":"standby""#), "got {s}");
-        assert!(
-            s.contains(r#""enabled":false"#),
-            "expected `enabled`, got {s}"
-        );
-    }
-
-    #[test]
-    fn deserialize_calibrate_yaw() {
-        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd":"calibrate_yaw"}"#).unwrap();
-        assert!(matches!(cmd, IpcCommand::CalibrateYaw));
-    }
-
-    #[test]
-    fn deserialize_set_yaw_offset() {
-        let cmd: IpcCommand =
-            serde_json::from_str(r#"{"cmd":"set_yaw_offset","deg":-4.5}"#).unwrap();
-        match cmd {
-            IpcCommand::SetYawOffset { deg } => assert!((deg - -4.5).abs() < 1e-6),
-            other => panic!("expected SetYawOffset, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn serialize_set_yaw_offset_uses_snake_case() {
-        let cmd = IpcCommand::SetYawOffset { deg: 1.25 };
-        let s = serde_json::to_string(&cmd).unwrap();
-        assert!(
-            s.contains(r#""cmd":"set_yaw_offset""#),
-            "expected snake_case discriminator, got {s}"
-        );
-        assert!(s.contains(r#""deg":1.25"#), "got {s}");
-    }
-
-    #[test]
-    fn deserialize_selftest() {
-        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd":"selftest"}"#).unwrap();
-        assert!(matches!(cmd, IpcCommand::Selftest));
-    }
-}
+mod tests;

@@ -1,19 +1,22 @@
 # Turret
 
-Command-line tool for STorM32 gimbal controllers. Uses the RC Commands protocol.
+Portable gimbal and camera control contracts, with host drivers and command-line tools.
 
 ## What this is
 
-Turret is an embedded-Linux **gimbal manager / targeting middleware**:
-the standards-compliant front-end (MAVLink Gimbal Manager v2 today; the
-spec calls out multi-source arbitration, capability advertising, and a
-common command shape) bolted onto cheap or non-standard gimbal
-controllers (STorM32 RC over serial today). The daemon takes the
-operator-protocol side seriously — primary/secondary control ownership,
-ACK shapes, frame-flag conventions, rate→position integration, drift
-correction — so that every GCS, autopilot, or companion app on the
-network sees a normal MAVLink gimbal regardless of what's actually
-moving the motors.
+Turret provides a portable control contract for gimbals and camera zoom.
+`turret-core` contains capability declarations, typed commands, independent
+observations, and command deadlines. It requires neither an operating system
+nor heap allocation. The host supplies monotonic time, scheduling, and I/O.
+`turret-dji` provides bounded DUML parsing and the experimental Mini 3 pitch
+encoder. It does not provide flight control or certify device completion.
+`turret-mavlink` provides portable Gimbal Manager client and camera command
+policies. It also requires neither an operating system nor heap allocation;
+the host validates device identity and performs the final transport write.
+
+The `turret` package supplies host drivers, a CLI, local IPC, and a MAVLink
+Gimbal Manager. The STorM32 backend uses RC Commands over serial. Pilotage can
+use the portable contract with its own device connection and authority service.
 
 ### Operator protocols are pluggable
 
@@ -32,11 +35,17 @@ potentially-several front-ends, but ship one well before the second.
 
 ### Hardware protocols are pluggable too
 
-The hardware side runs through the `gimbal::GimbalDevice` trait
-(`set_attitude`, `get_attitude`, `protocol_name`). Today's only
-implementation is STorM32 RC (`protocols::storm32_rc`); a different
-controller is a new `GimbalDevice` impl, no other module changes. The
-embedded-use docstring on `daemon` shows the minimum invocation.
+The hardware side uses `gimbal::GimbalDevice`. A backend declares its
+capabilities, executes a typed payload command before its write deadline, and
+reports partial observations. Unsupported axes remain absent. A successful
+write does not establish device acceptance or physical completion. Recenter
+uses the backend's declared operation; its target remains unknown when the device
+configuration does not expose that pose.
+
+A host must execute the stop or cancel effects returned by `turret-core`.
+Write expiry, continuous-command expiry, ACK timeout, and completion timeout
+have separate meanings. A host stop request does not establish a device
+watchdog guarantee.
 
 ## Features
 
@@ -288,30 +297,32 @@ yaw_corrector_enabled = true
 
 ## Use as a library
 
-Two consumption modes:
+Choose the package for the execution environment:
 
-- **Lean driver** (`default-features = false`): just the `Storm32RC`
-  driver and the `GimbalDevice` trait. Pulls 4 direct deps
-  (`serde / serialport / thiserror / tracing`) and no tokio.
+- **Embedded firmware:** link `turret-core`, and a protocol package such as
+  `turret-dji` when required. Supply a monotonic clock and bounded I/O. Check
+  commands at the final device write boundary. Keep authority and motor control
+  in the firmware host.
+- **Host driver:** use `turret` with `default-features = false`. The
+  `GimbalDevice` trait preserves capabilities, partial observations, and
+  transport receipts. This package uses the operating system and serial I/O.
+- **Host service:** enable the default features for the CLI, local IPC, and
+  MAVLink manager. One service owns each device connection. External managers
+  must not compete for the same device.
 
-  ```toml
-  [dependencies]
-  turret = { version = "0.1", default-features = false }
-  ```
+```rust,no_run
+use std::time::{Duration, Instant};
+use turret::turret_core::PayloadCommand;
 
-  ```rust,no_run
-  let mut g = turret::detect_gimbal("/dev/ttyACM0")?;
-  g.set_attitude(10.0, 0.0, -15.0)?;
-  # Ok::<_, turret::Error>(())
-  ```
-
-- **Embedded MAVLink manager**: bring your own `dyn GimbalDevice`
-  (different protocol, simulator, network-attached gimbal) and let
-  Turret handle MAVLink discovery, primary-control arbitration, hot
-  attitude broadcast, IPC, and bounded shutdown. The default features
-  pull tokio + the daemon stack.
-
-  See `turret::daemon` module-level docs for the full embedding example.
+let mut device = turret::detect_gimbal_blocking("/dev/ttyACM0")?;
+let receipt = device.execute_blocking(
+    PayloadCommand::Recenter,
+    Instant::now() + Duration::from_millis(100),
+)?;
+// The receipt states write and ACK evidence, not physical completion.
+let observation = device.observe_blocking()?;
+# Ok::<_, turret::Error>(())
+```
 
 ## Develop
 With a recent [Rust](https://rustup.rs) installed:

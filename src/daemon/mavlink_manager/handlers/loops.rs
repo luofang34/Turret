@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tokio::time;
-use tracing::warn;
+use tracing::{error, warn};
 
 /// Broadcast `HEARTBEAT` at 1 Hz to every recorded peer.
 pub(in crate::daemon::mavlink_manager) async fn heartbeat_loop(
@@ -91,27 +91,12 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_broadcast_loop(
     seq: Arc<AtomicU8>,
     config: MavlinkConfig,
     start_time: Instant,
-    mut attitude_rx: broadcast::Receiver<AttitudeTick>,
+    mut attitude_rx: broadcast::Receiver<Arc<AttitudeTick>>,
 ) {
+    let mut dropped = 0_u64;
     loop {
-        let tick = match attitude_rx.recv().await {
-            Ok(t) => t,
-            Err(broadcast::error::RecvError::Closed) => {
-                // Poll loop has exited — no more ticks ever. Stop
-                // cleanly; spawn_critical will pick up the join.
-                warn!("Attitude broadcast channel closed; broadcast loop exiting");
-                return;
-            }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                // Subscriber fell behind the channel buffer. Skip the
-                // gap and resume on the next tick — we'd rather drop
-                // a few stale frames than block the publisher.
-                warn!(
-                    "GIMBAL_DEVICE_ATTITUDE_STATUS broadcast lagged by {} ticks",
-                    n
-                );
-                continue;
-            }
+        let Some(tick) = receive_attitude(&mut attitude_rx, &mut dropped).await else {
+            return;
         };
 
         let failure_flags = if tick.link_recently_failed {
@@ -136,3 +121,29 @@ pub(in crate::daemon::mavlink_manager) async fn attitude_broadcast_loop(
         .await;
     }
 }
+
+async fn receive_attitude(
+    receiver: &mut broadcast::Receiver<Arc<AttitudeTick>>,
+    dropped: &mut u64,
+) -> Option<Arc<AttitudeTick>> {
+    loop {
+        match receiver.recv().await {
+            Ok(tick) => return Some(tick),
+            Err(broadcast::error::RecvError::Closed) => {
+                warn!("attitude channel closed");
+                return None;
+            }
+            Err(broadcast::error::RecvError::Lagged(count)) => {
+                *dropped = dropped.saturating_add(count);
+                error!(
+                    count,
+                    total = *dropped,
+                    "attitude observations lost by MAVLink broadcaster"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -10,11 +10,8 @@
 //! The parent [`super::MavlinkManager`] only sees the re-exports below;
 //! everything else is private to this module.
 
-#[path = "handlers/build.rs"]
 mod build;
-#[path = "handlers/inbound.rs"]
 mod inbound;
-#[path = "handlers/loops.rs"]
 mod loops;
 
 pub(super) use inbound::handle_mavlink_message;

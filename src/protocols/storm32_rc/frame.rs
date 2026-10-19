@@ -8,7 +8,7 @@ const RC_START_SIGN_IN: u8 = 0xFA;
 
 /// Start sign for frames the gimbal sends back (`0xFB`).
 ///
-/// `pub(super)` because `driver::send_rc_command` uses this to detect stale
+/// `pub(super)` because `driver::send_rc_command_blocking` uses this to detect stale
 /// / garbage bytes on the serial line before handing bytes off to
 /// [`RCMessage::parse_response`].
 pub(super) const RC_START_SIGN_OUT: u8 = 0xFB;
@@ -162,8 +162,7 @@ impl RCMessage {
 
     /// Parse an inbound frame from the gimbal. Returns the payload bytes.
     pub fn parse_response(data: &[u8]) -> Result<Vec<u8>> {
-        // Single-byte ACK (`0x4A` etc.) — common for SET commands.
-        if data.len() == 1 {
+        if data == [0x4A] {
             return Ok(vec![]);
         }
 
@@ -231,76 +230,4 @@ impl RCMessage {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_crc16_calculation() {
-        let msg = RCMessage::new(RCCommand::GetVersion, Vec::new());
-        let data = vec![0u8, 1u8]; // length=0, command=1
-        let crc = msg.calculate_crc16(&data);
-        assert_ne!(crc, 0);
-    }
-
-    #[test]
-    fn test_crc16_verification() {
-        let data = vec![0u8, 1u8];
-        let msg = RCMessage::new(RCCommand::GetVersion, Vec::new());
-        let crc = msg.calculate_crc16(&data);
-
-        assert!(RCMessage::verify_crc16(&data, crc));
-        assert!(!RCMessage::verify_crc16(&data, crc.wrapping_add(1)));
-    }
-
-    #[test]
-    fn test_set_angle_payload() {
-        let payload = RCMessage::create_set_angle_payload(10.0, 0.0, -15.0);
-
-        // 14 bytes: 3 floats (12) + flags (1) + type (1)
-        assert_eq!(payload.len(), 14);
-
-        let pitch = f32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-        assert_eq!(pitch, 10.0);
-
-        assert_eq!(payload[12], 0x00); // flags
-        assert_eq!(payload[13], 0x00); // type
-    }
-
-    #[test]
-    fn test_single_axis_payload() {
-        let payload = RCMessage::create_single_axis_payload(1500);
-        assert_eq!(payload.len(), 2);
-        let value = u16::from_le_bytes([payload[0], payload[1]]);
-        assert_eq!(value, 1500);
-    }
-
-    #[test]
-    fn test_message_serialization() {
-        let msg = RCMessage::new(RCCommand::GetVersion, Vec::new());
-        let serialized = msg.serialize();
-
-        assert_eq!(serialized[0], RC_START_SIGN_IN);
-        assert_eq!(serialized[1], 0); // length
-        assert_eq!(serialized[2], RCCommand::GetVersion as u8);
-
-        // start + length + command + crc(2) = 5
-        assert_eq!(serialized.len(), 5);
-    }
-
-    #[test]
-    fn test_response_parsing_ack() {
-        let result = RCMessage::parse_response(&[0x4A]);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0);
-    }
-
-    #[test]
-    fn test_response_parsing_invalid() {
-        // Too short (less than 3 bytes, not the single-byte ACK).
-        assert!(RCMessage::parse_response(&[0xFB, 0x00]).is_err());
-
-        // Invalid start sign.
-        assert!(RCMessage::parse_response(&[0xFF, 0x00, 0x00]).is_err());
-    }
-}
+mod tests;

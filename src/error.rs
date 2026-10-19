@@ -11,6 +11,15 @@ use crate::protocols::storm32_rc::Storm32Error;
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum Error {
+    /// Portable payload validation or execution failure.
+    #[error("payload contract: {0}")]
+    Payload(#[from] turret_core::Error),
+    /// A required physical measurement is absent.
+    #[error("no valid measured {field} is available")]
+    MissingMeasurement {
+        /// Name of the missing quantity.
+        field: &'static str,
+    },
     /// Failure from the STorM32 RC driver.
     #[error("storm32: {0}")]
     Storm32(#[from] Storm32Error),
@@ -73,6 +82,17 @@ pub enum Error {
     /// Caller passed an argument that failed validation.
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    /// A named blocking worker terminated before returning its result.
+    #[cfg(feature = "daemon")]
+    #[error("{operation} worker failed: {source}")]
+    Worker {
+        /// Operation performed by the worker.
+        operation: &'static str,
+        /// Original task join failure.
+        #[source]
+        source: tokio::task::JoinError,
+    },
 
     /// Daemon startup / wiring failure (socket bind, MAVLink link setup, etc.).
     #[error("daemon: {0}")]
