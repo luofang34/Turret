@@ -7,7 +7,7 @@ license = "GPL-3.0"
 description = "Bounded DJI payload protocol for Turret"
 
 [dependencies]
-turret-core = { path = "../turret-core" }
+turret-core = { path = "../turret-core", version = "0.1.0" }
 thiserror = { version = "2", default-features = false }
 
 [lints]
