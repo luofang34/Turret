@@ -62,21 +62,21 @@ jobs:
 
       - name: clippy
         if: matrix.gate == 'clippy'
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --workspace --locked --all-targets -- -D warnings
 
       - name: test
         if: matrix.gate == 'test'
-        run: cargo test --locked --all-targets
+        run: cargo test --workspace --locked --all-targets
 
       - name: doc
         if: matrix.gate == 'doc'
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --locked --no-deps
+        run: cargo doc --workspace --locked --no-deps
 
       - name: release build
         if: matrix.gate == 'release-build'
-        run: cargo build --locked --release
+        run: cargo build --workspace --locked --release
 
       # Library-only build with default features off — proves a downstream
       # consumer that wants just the Storm32 driver can `cargo add turret`
@@ -98,4 +98,4 @@ jobs:
       # the gate.
       - name: publish dry-run
         if: matrix.gate == 'publish-dryrun'
-        run: cargo publish --dry-run --locked
+        run: cargo publish --workspace --dry-run --locked

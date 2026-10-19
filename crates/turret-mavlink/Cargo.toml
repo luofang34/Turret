@@ -7,7 +7,7 @@ license = "GPL-3.0"
 description = "Allocation-free MAVLink gimbal-manager client and camera payload policy"
 
 [dependencies]
-turret-core = { path = "../turret-core" }
+turret-core = { path = "../turret-core", version = "0.1.0" }
 
 [lints]
 workspace = true
