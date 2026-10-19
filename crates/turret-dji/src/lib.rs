@@ -7,6 +7,7 @@ extern crate std;
 mod checksum;
 mod duml;
 mod gimbal;
+mod keyframe;
 mod pitch;
 mod profile;
 mod stream;
@@ -23,3 +24,8 @@ pub use pitch::{
     MAX_INPUT_INTERVAL, MAX_PITCH_RATE, PitchPlanner, PitchRateError, observed_pitch_target,
 };
 pub use profile::{pitch_capabilities, rc_version_request};
+
+pub use keyframe::{
+    KeyframeAbort, KeyframeState, KeyframeWriteError, KeyframeWriteReceipt,
+    MINI3_KEYFRAME_INTERVAL_US, Mini3AccessoryKeyframe,
+};
