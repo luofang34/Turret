@@ -47,6 +47,33 @@ Write expiry, continuous-command expiry, ACK timeout, and completion timeout
 have separate meanings. A host stop request does not establish a device
 watchdog guarantee.
 
+### Mini 3 accessory video request
+
+`turret-dji::Mini3AccessoryKeyframe` provides one finite request for the Mini 3
+upper accessory mux channel (port 22345). It emits three fixed APP `02` → `0e`
+DUML `01/01` frames, flags `00`, with 11-byte payloads whose zero-based bytes 5
+and 9 are `0x24`, `0x24`, then `0x04`. All other payload bytes remain zero.
+This experimental sequence is scoped to the tested Mini 3 HEVC stream; H.264 and
+other devices/firmware remain unverified.
+It is not flight, yaw, zoom, or lower USB CDC support.
+
+The host reserves three wrapping wire sequences, supplies a unique connection
+token, readiness time, and absolute deadline, then calls `write_available` at
+the final nonblocking write boundary. Report the accepted byte count and a fresh
+`turret_core::Tick` sampled after the write returns. Short writes resume only the
+unwritten suffix; each complete frame starts a minimum 50 ms delay. Translate
+would-block into a zero-byte receipt. Serialize writes with `close`/`cancel`;
+errors, session changes, cancellation, and deadlines permanently end that request.
+Aborting only stops further transmission; it does not prove the request bits were
+cleared on the device. If the clear frame was not fully accepted, device state is
+unknown. A reconnect requires the caller to initiate a new explicit request and
+token. `TransportAccepted` means only that all bytes reached the transport: the video decoder must independently
+establish a complete keyframe and usable picture.
+
+The two `keyframe/fixtures/mini3-request-*.bin` test vectors contain only the
+96 transmitted command bytes from independent Mini 3 accessory requests. They
+contain no received video or device identifiers.
+
 ## Features
 
 - **CLI Mode**: Direct command-line control
