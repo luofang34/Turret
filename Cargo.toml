@@ -65,7 +65,7 @@ daemon = [
 cli = ["dep:clap", "dep:tracing-subscriber"]
 
 [dependencies]
-turret-core = { path = "crates/turret-core" }
+turret-core = { path = "crates/turret-core", version = "0.1.0" }
 # Library core — always on.
 serialport = "4.9"
 thiserror = "2.0"
