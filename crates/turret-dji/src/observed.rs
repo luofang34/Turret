@@ -74,13 +74,10 @@ impl ObservedPitchPlanner {
             self.cancel();
             return Err(turret_core::Error::OutOfRange);
         }
-        let observed = match self.profile.pitch_target(pitch_tenths) {
-            Ok(observed) => observed,
-            Err(_) => {
-                self.cancel();
-                return Err(turret_core::Error::InvalidObservation);
-            }
-        };
+        if let Err(error) = self.profile.validate_observed_pitch(pitch_tenths) {
+            self.cancel();
+            return Err(error);
+        }
         if self.last_input.is_some_and(|last| {
             now.checked_sub(last)
                 .is_none_or(|elapsed| elapsed > MAX_INPUT_INTERVAL)
@@ -88,19 +85,12 @@ impl ObservedPitchPlanner {
             self.cancel();
         }
         self.last_input = Some(now);
-        self.update_motion(observed, rate, recenter);
-        let target = match self.motion {
-            Motion::Manual => Some(self.profile.observed_pitch_target(
-                pitch_tenths,
-                rate,
-                false,
-            )?),
-            Motion::Recenter => Some(self.profile.observed_pitch_target(
-                pitch_tenths,
-                0.0,
-                true,
-            )?),
-            Motion::Idle => self.hold,
+        let target = match self.next_target(pitch_tenths, rate, recenter) {
+            Ok(target) => target,
+            Err(error) => {
+                self.cancel();
+                return Err(error);
+            }
         };
         let Some(target) = target.filter(|target| Some(*target) != self.last_written) else {
             self.pending = None;
@@ -116,6 +106,31 @@ impl ObservedPitchPlanner {
         self.next_id = self.next_id.wrapping_add(1);
         self.pending = Some(plan);
         Ok(Some(plan))
+    }
+
+    fn next_target(
+        &mut self,
+        observed: i16,
+        rate: f32,
+        recenter: bool,
+    ) -> Result<Option<GimbalPitchTarget>, turret_core::Error> {
+        self.update_motion(observed, rate, recenter)?;
+        match self.motion {
+            Motion::Manual => self
+                .profile
+                .observed_pitch_target(observed, rate, false)
+                .map(Some),
+            Motion::Recenter => self
+                .profile
+                .observed_pitch_target(observed, 0.0, true)
+                .map(Some),
+            Motion::Idle => {
+                if let Some(hold) = self.hold {
+                    self.profile.validate_observed_target(observed, hold)?;
+                }
+                Ok(self.hold)
+            }
+        }
     }
 
     /// Commit a full write receipt matched by the host to this exact plan.
@@ -143,7 +158,12 @@ impl ObservedPitchPlanner {
         self.pending = None;
     }
 
-    fn update_motion(&mut self, observed: GimbalPitchTarget, rate: f32, recenter: bool) {
+    fn update_motion(
+        &mut self,
+        observed: i16,
+        rate: f32,
+        recenter: bool,
+    ) -> Result<(), turret_core::Error> {
         if recenter {
             self.begin(Motion::Recenter);
         } else if rate != 0.0 {
@@ -152,12 +172,13 @@ impl ObservedPitchPlanner {
             }
         } else if self.motion == Motion::Manual {
             self.motion = Motion::Idle;
-            self.hold = Some(observed);
+            self.hold = Some(self.profile.observed_hold_target(observed)?);
         }
-        if self.motion == Motion::Recenter && observed.tenths() == 0 {
+        if self.motion == Motion::Recenter && observed == 0 {
             self.motion = Motion::Idle;
             self.hold = None;
         }
+        Ok(())
     }
 
     fn begin(&mut self, motion: Motion) {

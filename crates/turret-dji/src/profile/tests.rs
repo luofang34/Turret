@@ -198,10 +198,9 @@ fn observed_targets_and_recenter_share_the_selected_range_and_rate() {
                 );
             }
         }
-        assert!(
-            profile
-                .observed_pitch_target(minimum - 1, 0.0, false)
-                .is_err()
+        assert_eq!(
+            profile.observed_hold_target(minimum - 1).unwrap().tenths(),
+            minimum
         );
         assert!(
             profile
@@ -237,4 +236,84 @@ fn observed_recenter_is_one_bounded_step_and_not_an_immediate_zero_target() {
         -880
     );
     assert_eq!(encoded.payload()[7], 10);
+}
+
+#[test]
+fn feedback_envelope_does_not_expand_the_command_envelope() {
+    let profile = Mini3ControlProfile::new(
+        -900,
+        AngularRate::radians_per_second(30_f32.to_radians()).unwrap(),
+    )
+    .unwrap();
+    for observed in [-1350, -901, 1, 800] {
+        assert!(profile.validate_observed_pitch(observed).is_ok());
+        assert!(profile.pitch_target(observed).is_err());
+    }
+    for observed in [i16::MIN, -1351, 801, i16::MAX] {
+        assert!(profile.validate_observed_pitch(observed).is_err());
+        assert!(profile.observed_hold_target(observed).is_err());
+    }
+    assert_eq!(profile.observed_hold_target(1).unwrap().tenths(), 0);
+    assert_eq!(profile.observed_hold_target(-901).unwrap().tenths(), -900);
+    assert_eq!(
+        profile
+            .observed_pitch_target(1, -30_f32.to_radians(), false)
+            .unwrap()
+            .tenths(),
+        -299
+    );
+    assert_eq!(
+        profile
+            .observed_pitch_target(1, 0.0, true)
+            .unwrap()
+            .tenths(),
+        0
+    );
+    for observed in [-1350, 800] {
+        assert!(profile.observed_hold_target(observed).is_err());
+        assert!(profile.observed_pitch_target(observed, 0.0, true).is_err());
+    }
+}
+
+#[test]
+fn every_legal_observed_step_preserves_the_policy_budget_and_wire_range() {
+    for degrees in [0.01_f32, 2.03, 5.0, 30.0] {
+        let rate = AngularRate::radians_per_second(degrees.to_radians()).unwrap();
+        let profile = Mini3ControlProfile::new(-900, rate).unwrap();
+        for observed in -1350..=800 {
+            for demand in [
+                -rate.as_radians_per_second(),
+                0.0,
+                rate.as_radians_per_second(),
+            ] {
+                for recenter in [false, true] {
+                    if let Ok(target) = profile.observed_pitch_target(observed, demand, recenter) {
+                        assert!((-900..=0).contains(&target.tenths()));
+                        let step = (i32::from(target.tenths()) - i32::from(observed)).abs();
+                        assert!(f64::from(step) <= f64::from(degrees) * 10.0 + 0.00001);
+                        assert!(profile.encode_pitch(target, 1).is_ok());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_queued_target_is_valid_only_within_the_current_observed_step() {
+    let rate = AngularRate::radians_per_second(30_f32.to_radians()).unwrap();
+    let profile = Mini3ControlProfile::new(-900, rate).unwrap();
+    let target = profile.observed_hold_target(1).unwrap();
+    for observed in [-300, 0, 1, 300] {
+        assert!(profile.validate_observed_target(observed, target).is_ok());
+    }
+    for observed in [-301, 301, 800, -1350, i16::MAX] {
+        assert!(profile.validate_observed_target(observed, target).is_err());
+    }
+    let narrow = Mini3ControlProfile::new(-50, rate).unwrap();
+    assert!(
+        narrow
+            .validate_observed_target(-51, profile.pitch_target(-51).unwrap())
+            .is_err()
+    );
 }
