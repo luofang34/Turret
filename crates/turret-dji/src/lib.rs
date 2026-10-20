@@ -20,10 +20,8 @@ pub use duml::{DumlFrame, DumlParser, RouteAddress};
 pub use gimbal::{GimbalAngles, GimbalPitchTarget, PitchTargetError, pitch_response};
 pub use stream::ParseStats;
 
-pub use pitch::{
-    MAX_INPUT_INTERVAL, MAX_PITCH_RATE, PitchPlanner, PitchRateError, observed_pitch_target,
-};
-pub use profile::{pitch_capabilities, rc_version_request};
+pub use pitch::{MAX_INPUT_INTERVAL, PitchPlanner, PitchRateError};
+pub use profile::{Mini3ControlProfile, rc_version_request};
 
 pub use keyframe::{
     KeyframeAbort, KeyframeState, KeyframeWriteError, KeyframeWriteReceipt,

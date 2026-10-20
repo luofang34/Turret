@@ -1,7 +1,15 @@
 use std::vec::Vec;
 
-use super::{GimbalAngles, GimbalPitchTarget, PitchTargetError, pitch_response};
-use crate::{DumlFrame, DumlParser, RouteAddress, checksum};
+use super::{GimbalAngles, PitchTargetError, pitch_response};
+use crate::{DumlFrame, DumlParser, Mini3ControlProfile, RouteAddress, checksum};
+
+fn profile() -> Mini3ControlProfile {
+    Mini3ControlProfile::new(
+        -900,
+        turret_core::AngularRate::radians_per_second(5_f32.to_radians()).unwrap(),
+    )
+    .unwrap()
+}
 
 // RC231 / Mini 3 capture raw SHA-256:
 // 2dc370d945475cc5ee71aa04ea0cc901d88296e8b20a0e654f232891b8b8d273.
@@ -31,8 +39,8 @@ fn rewrite(bytes: &mut [u8]) {
 
 #[test]
 fn the_pitch_encoder_matches_the_captured_command() -> Result<(), PitchTargetError> {
-    let target = GimbalPitchTarget::from_tenths(-50)?;
-    assert_eq!(target.encode_app_command(34531), COMMAND);
+    let target = profile().pitch_target(-50)?;
+    assert_eq!(profile().encode_pitch(target, 34531)?, COMMAND);
     assert_eq!(target.tenths(), -50);
     Ok(())
 }
@@ -40,9 +48,9 @@ fn the_pitch_encoder_matches_the_captured_command() -> Result<(), PitchTargetErr
 #[test]
 fn every_target_preserves_the_route_ignored_axes_and_duration() -> Result<(), PitchTargetError> {
     for tenths in -900..=0 {
-        let target = GimbalPitchTarget::from_tenths(tenths)?;
+        let target = profile().pitch_target(tenths)?;
         for sequence in [0, 1, u16::MAX] {
-            let frames = parse(&target.encode_app_command(sequence));
+            let frames = parse(&profile().encode_pitch(target, sequence)?);
             assert_eq!(frames.len(), 1);
             let frame = &frames[0];
             assert_eq!(frame.sender(), RouteAddress(2));
@@ -61,8 +69,11 @@ fn every_target_preserves_the_route_ignored_axes_and_duration() -> Result<(), Pi
 fn a_target_outside_the_encoder_range_cannot_be_encoded() {
     for tenths in [i16::MIN, -901, 1, i16::MAX] {
         assert_eq!(
-            GimbalPitchTarget::from_tenths(tenths),
-            Err(PitchTargetError { tenths })
+            profile().pitch_target(tenths),
+            Err(PitchTargetError {
+                tenths,
+                minimum_tenths: -900
+            })
         );
     }
 }

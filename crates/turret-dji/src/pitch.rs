@@ -1,38 +1,19 @@
 //! Finite pitch targets for a one-way, initially horizontal bench attachment.
 
+use crate::{GimbalPitchTarget, Mini3ControlProfile, PitchTargetError};
 use core::time::Duration;
 
 /// Maximum interval integrated from a live input stream.
 pub const MAX_INPUT_INTERVAL: Duration = Duration::from_millis(100);
-/// Maximum pitch demand for the bench envelope, in radians per second.
-pub const MAX_PITCH_RATE: f32 = core::f32::consts::PI / 36.0;
 
-/// An input outside the bench pitch envelope.
+/// An input outside the selected pitch rate policy.
 #[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
-#[error("pitch rate {0} rad/s is not finite or exceeds the bench limit")]
-pub struct PitchRateError(pub f32);
-
-/// Convert an observed pitch and live demand into a one-second position target.
-///
-/// This policy permits -5 through zero degrees. The host must separately verify
-/// the observation's route, mode, continuity, and age before calling it.
-pub fn observed_pitch_target(
-    pitch_tenths: i16,
-    rate: f32,
-    recenter: bool,
-) -> Result<crate::GimbalPitchTarget, turret_core::Error> {
-    validate_rate(rate).map_err(|_| turret_core::Error::OutOfRange)?;
-    if !(-50..=0).contains(&pitch_tenths) {
-        return Err(turret_core::Error::InvalidObservation);
-    }
-    let desired = if recenter {
-        0.0
-    } else {
-        f32::from(pitch_tenths) + rate.to_degrees() * 10.0
-    };
-    let bounded = desired.clamp(-50.0, 0.0);
-    crate::GimbalPitchTarget::from_tenths((bounded - 0.5) as i16)
-        .map_err(|_| turret_core::Error::OutOfRange)
+#[error("pitch rate {requested} rad/s is not finite or exceeds configured limit {maximum} rad/s")]
+pub struct PitchRateError {
+    /// Rejected demand in radians per second.
+    pub requested: f32,
+    /// Configured maximum absolute demand in radians per second.
+    pub maximum: f32,
 }
 
 /// Tracks commanded pitch, without producing a measured attitude.
@@ -42,6 +23,7 @@ pub fn observed_pitch_target(
 /// must enforce authority and invalidate queued writes when input expires.
 #[derive(Debug)]
 pub struct PitchPlanner {
+    profile: Mini3ControlProfile,
     commanded: i16,
     remainder: f64,
     last_input: Option<Duration>,
@@ -53,8 +35,9 @@ impl PitchPlanner {
     /// Start a new bench attachment from an operator-confirmed horizontal pose.
     /// This creates no command and provides no sensor observation.
     #[must_use]
-    pub const fn from_confirmed_horizontal() -> Self {
+    pub const fn from_confirmed_horizontal(profile: Mini3ControlProfile) -> Self {
         Self {
+            profile,
             commanded: 0,
             remainder: 0.0,
             last_input: None,
@@ -76,7 +59,12 @@ impl PitchPlanner {
     }
 
     /// Commit a fully written target. This does not confirm movement or arrival.
-    pub fn written(&mut self, pitch: crate::GimbalPitchTarget, now: Duration) {
+    pub fn written(
+        &mut self,
+        pitch: GimbalPitchTarget,
+        now: Duration,
+    ) -> Result<(), PitchTargetError> {
+        self.profile.pitch_target(pitch.tenths())?;
         self.commanded = pitch.tenths();
         if self.write_stalled {
             self.discard_elapsed(now);
@@ -85,6 +73,7 @@ impl PitchPlanner {
         if self.commanded == 0 {
             self.recentering = false;
         }
+        Ok(())
     }
 
     /// Exclude waiting time when the transport cannot accept a target.
@@ -112,7 +101,7 @@ impl PitchPlanner {
         recenter: bool,
         now: Duration,
     ) -> Result<f32, PitchRateError> {
-        validate_rate(rate)?;
+        self.profile.validate_rate(rate)?;
         if !recenter
             && self.last_input.is_some_and(|last| {
                 now.checked_sub(last)
@@ -126,7 +115,7 @@ impl PitchPlanner {
         }
         self.recentering = (recenter || self.recentering) && self.commanded != 0;
         Ok(if self.recentering {
-            MAX_PITCH_RATE
+            self.profile.rate_limit().as_radians_per_second()
         } else if recenter {
             0.0
         } else {
@@ -141,8 +130,14 @@ impl PitchPlanner {
     }
 
     /// Compute a bounded target without committing it as sent or measured.
-    pub fn target(&mut self, rate: f32, now: Duration) -> Result<Option<i16>, PitchRateError> {
-        validate_rate(rate)?;
+    pub fn target(
+        &mut self,
+        rate: f32,
+        now: Duration,
+    ) -> Result<Option<GimbalPitchTarget>, turret_core::Error> {
+        self.profile
+            .validate_rate(rate)
+            .map_err(|_| turret_core::Error::OutOfRange)?;
         let elapsed = self.last_input.and_then(|last| now.checked_sub(last));
         self.last_input = Some(now);
         let Some(elapsed) = elapsed.filter(|elapsed| *elapsed <= MAX_INPUT_INTERVAL) else {
@@ -150,19 +145,18 @@ impl PitchPlanner {
             return Ok(None);
         };
         let change = f64::from(rate).to_degrees() * 10.0 * elapsed.as_secs_f64();
-        let desired = (f64::from(self.commanded) + self.remainder + change).clamp(-900.0, 0.0);
+        let desired = (f64::from(self.commanded) + self.remainder + change)
+            .clamp(f64::from(self.profile.minimum_tenths()), 0.0);
         // The envelope is nonpositive; integer conversion truncates toward zero.
         let rounded = (desired - 0.5) as i16;
         self.remainder = desired - f64::from(rounded);
-        Ok((rounded != self.commanded).then_some(rounded))
-    }
-}
-
-fn validate_rate(rate: f32) -> Result<(), PitchRateError> {
-    if rate.is_finite() && rate.abs() <= MAX_PITCH_RATE {
-        Ok(())
-    } else {
-        Err(PitchRateError(rate))
+        if rounded == self.commanded {
+            return Ok(None);
+        }
+        self.profile
+            .pitch_target(rounded)
+            .map(Some)
+            .map_err(|_| turret_core::Error::OutOfRange)
     }
 }
 

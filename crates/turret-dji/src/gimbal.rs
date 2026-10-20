@@ -4,34 +4,35 @@ use crate::{DumlFrame, RouteAddress, checksum};
 
 const APP: u8 = 2;
 const GIMBAL: u8 = 4;
-const MIN_PITCH_TENTHS: i16 = -900;
-const MAX_PITCH_TENTHS: i16 = 0;
 
-/// A pitch target outside the supported encoder range.
+/// A pitch target outside the selected control profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("gimbal pitch {tenths} tenths of a degree is outside -900..=0")]
+#[error("gimbal pitch {tenths} tenths of a degree is outside {minimum_tenths}..=0")]
 pub struct PitchTargetError {
     /// The rejected target in tenths of a degree.
     pub tenths: i16,
+    /// The selected profile's inclusive lower bound.
+    pub minimum_tenths: i16,
 }
 
-/// A pitch target from -90 to 0 degrees, with a one-second movement duration.
+/// A profile-validated pitch target, encoded with a one-second movement duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GimbalPitchTarget {
     tenths: i16,
 }
 
 impl GimbalPitchTarget {
-    /// Makes a target in tenths of a degree.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PitchTargetError`] when the target is outside -900..=0.
-    pub fn from_tenths(tenths: i16) -> Result<Self, PitchTargetError> {
-        if (MIN_PITCH_TENTHS..=MAX_PITCH_TENTHS).contains(&tenths) {
+    pub(crate) fn new(
+        profile: crate::Mini3ControlProfile,
+        tenths: i16,
+    ) -> Result<Self, PitchTargetError> {
+        if (profile.minimum_tenths()..=0).contains(&tenths) {
             Ok(Self { tenths })
         } else {
-            Err(PitchTargetError { tenths })
+            Err(PitchTargetError {
+                tenths,
+                minimum_tenths: profile.minimum_tenths(),
+            })
         }
     }
 
@@ -46,7 +47,7 @@ impl GimbalPitchTarget {
     /// Yaw and roll are ignored. This returns bytes only; it does not open a
     /// transport or authorize a write. The caller supplies the wire sequence.
     #[must_use]
-    pub fn encode_app_command(self, sequence: u16) -> [u8; 21] {
+    pub(crate) fn encode_app_command(self, sequence: u16) -> [u8; 21] {
         let sequence = sequence.to_le_bytes();
         let pitch = self.tenths.to_le_bytes();
         let mut bytes = [
