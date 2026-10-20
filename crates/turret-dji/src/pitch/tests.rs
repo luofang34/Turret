@@ -38,7 +38,7 @@ fn observed_pitch_targets_keep_the_verified_envelope_and_recenter_axis() {
             .tenths(),
         -25
     );
-    for pose in [-51, 1] {
+    for pose in [-1351, 801] {
         assert!(profile.observed_pitch_target(pose, 0.0, false).is_err());
     }
     for rate in [f32::NAN, f32::INFINITY, TEST_RATE * 2.0] {

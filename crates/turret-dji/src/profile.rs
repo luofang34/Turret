@@ -1,4 +1,4 @@
-//! One configured Mini 3 pitch envelope for commands and capability declarations.
+//! Mini 3 pitch feedback validation and a separate configured command envelope.
 
 use turret_core::{
     Angle, AngleRange, AngularRate, Axes, AxisCapabilities, Capability, FeedbackCapabilities,
@@ -47,6 +47,51 @@ impl Mini3ControlProfile {
         crate::GimbalPitchTarget::new(self, tenths)
     }
 
+    /// Check pitch feedback independently of the configured command envelope.
+    ///
+    /// The [Mini 3 specifications](https://www.dji.com/mini-3/specs) provide
+    /// the -135 through +80 degree mechanical pitch limits used as a plausibility envelope.
+    /// This does not establish its reference frame, route, freshness, or identity,
+    /// and does not constrain the reported roll or yaw using mechanical limits.
+    pub fn validate_observed_pitch(self, tenths: i16) -> Result<(), turret_core::Error> {
+        if (-1350..=800).contains(&tenths) {
+            Ok(())
+        } else {
+            Err(turret_core::Error::InvalidObservation)
+        }
+    }
+
+    /// Choose the nearest legal hold target within one second of the policy rate.
+    ///
+    /// A feedback value outside the command envelope stays unchanged at its source.
+    /// This target is not a measured attitude or a guarantee of physical stopping.
+    /// No target is returned when reaching the envelope would exceed the step budget.
+    pub fn observed_hold_target(
+        self,
+        tenths: i16,
+    ) -> Result<crate::GimbalPitchTarget, turret_core::Error> {
+        self.validate_observed_pitch(tenths)?;
+        self.bounded_observed_target(tenths, f64::from(tenths))
+    }
+
+    /// Recheck a planned target against current feedback and the one-second step budget.
+    ///
+    /// The host must separately qualify feedback identity and freshness at the write
+    /// boundary. Passing this check does not establish device speed or physical stopping.
+    pub fn validate_observed_target(
+        self,
+        observed: i16,
+        target: crate::GimbalPitchTarget,
+    ) -> Result<(), turret_core::Error> {
+        self.validate_observed_pitch(observed)?;
+        self.pitch_target(target.tenths())
+            .map_err(|_| turret_core::Error::OutOfRange)?;
+        if self.bounded_observed_target(observed, f64::from(target.tenths()))? != target {
+            return Err(turret_core::Error::OutOfRange);
+        }
+        Ok(())
+    }
+
     /// Revalidate a target at encoding, including targets created with another profile.
     ///
     /// The host must still check authority and deadlines at the actual write boundary.
@@ -73,16 +118,48 @@ impl Mini3ControlProfile {
     ) -> Result<crate::GimbalPitchTarget, turret_core::Error> {
         self.validate_rate(rate)
             .map_err(|_| turret_core::Error::OutOfRange)?;
-        self.pitch_target(pitch_tenths)
-            .map_err(|_| turret_core::Error::InvalidObservation)?;
+        self.validate_observed_pitch(pitch_tenths)?;
         let demand = if recenter {
-            self.rate_limit.as_radians_per_second()
+            if pitch_tenths > 0 {
+                -self.rate_limit.as_radians_per_second()
+            } else {
+                self.rate_limit.as_radians_per_second()
+            }
         } else {
             rate
         };
         let desired = f64::from(pitch_tenths) + f64::from(demand).to_degrees() * 10.0;
+        let desired = if recenter && pitch_tenths > 0 {
+            desired.max(0.0)
+        } else {
+            desired
+        };
+        let target = self.bounded_observed_target(pitch_tenths, desired)?;
+        if recenter || rate == 0.0 {
+            return Ok(target);
+        }
+        let requested = f64::from(rate).to_degrees() * 10.0;
+        let step = (requested.abs() + 0.00001).min(f64::from(i16::MAX)) as i32;
+        let (lower, upper) = if rate < 0.0 { (-step, 0) } else { (0, step) };
+        let observed = i32::from(pitch_tenths);
+        let delta = (i32::from(target.tenths()) - observed).clamp(lower, upper);
+        self.pitch_target((observed + delta) as i16)
+            .map_err(|_| turret_core::Error::OutOfRange)
+    }
+
+    fn bounded_observed_target(
+        self,
+        observed: i16,
+        desired: f64,
+    ) -> Result<crate::GimbalPitchTarget, turret_core::Error> {
         let bounded = desired.clamp(f64::from(self.minimum_tenths), 0.0);
-        self.pitch_target((bounded - 0.5) as i16)
+        let target = i32::from((bounded - 0.5) as i16);
+        let budget = f64::from(self.rate_limit.as_radians_per_second()).to_degrees() * 10.0;
+        // Quantization must not add motion beyond one second of the policy rate.
+        let step = (budget + 0.00001).min(f64::from(i16::MAX)) as i32;
+        let observed = i32::from(observed);
+        let target = target.clamp(observed - step, observed + step) as i16;
+        self.pitch_target(target)
             .map_err(|_| turret_core::Error::OutOfRange)
     }
 
