@@ -53,7 +53,7 @@ impl GimbalDevice for FakeDevice {
             received_at: now,
         })
     }
-    fn stop_blocking(&mut self, _effect: Effect) -> Result<()> {
+    fn stop_blocking(&mut self, _lane: crate::gimbal::PayloadLane, _effect: Effect) -> Result<()> {
         Ok(())
     }
 }
@@ -237,3 +237,5 @@ fn timing(send_before: Instant) -> HostCommandTiming {
         completion_before: None,
     }
 }
+
+mod lanes;

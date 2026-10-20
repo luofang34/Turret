@@ -81,52 +81,18 @@ pub fn encode_payload(
         PayloadCommand::Recenter => Ok(Demand::CommandLong {
             command: 1000,
             params: [
-                0.0,
-                0.0,
                 f32::NAN,
                 f32::NAN,
-                12.0,
+                f32::NAN,
+                f32::NAN,
+                2.0,
                 0.0,
                 f32::from(gimbal_device_id),
             ],
         }),
-        PayloadCommand::GimbalPosition(position) => {
-            check_frame(position.frame)?;
-            if position.angles.roll.is_some() {
-                return Err(Error::Unsupported);
-            }
-            if position.angles.pitch.is_none() && position.angles.yaw.is_none() {
-                return Err(Error::EmptyCommand);
-            }
-            for angle in [position.angles.pitch, position.angles.yaw]
-                .into_iter()
-                .flatten()
-            {
-                if angle.as_radians().abs() > core::f32::consts::PI {
-                    return Err(Error::OutOfRange);
-                }
-            }
-            Ok(Demand::CommandLong {
-                command: 1000,
-                params: [
-                    position
-                        .angles
-                        .pitch
-                        .map_or(f32::NAN, |v| v.as_radians().to_degrees()),
-                    position
-                        .angles
-                        .yaw
-                        .map_or(f32::NAN, |v| v.as_radians().to_degrees()),
-                    f32::NAN,
-                    f32::NAN,
-                    12.0,
-                    0.0,
-                    f32::from(gimbal_device_id),
-                ],
-            })
-        }
+        PayloadCommand::GimbalPosition(position) => encode_position(position, gimbal_device_id),
         PayloadCommand::GimbalRate(rate) => {
-            check_frame(rate.frame)?;
+            let flags = frame_flags(rate.frame)?;
             if rate.rates.roll.is_some() {
                 return Err(Error::Unsupported);
             }
@@ -134,7 +100,7 @@ pub fn encode_payload(
                 return Err(Error::EmptyCommand);
             }
             Ok(Demand::AttitudeRate {
-                flags: HORIZON_VEHICLE_YAW_FLAGS,
+                flags,
                 gimbal_device_id,
                 pitch_rps: rate
                     .rates
@@ -151,11 +117,48 @@ pub fn encode_payload(
     }
 }
 
-fn check_frame(frame: ReferenceFrame) -> Result<(), Error> {
-    if frame == ReferenceFrame::HorizonVehicleYaw {
-        Ok(())
-    } else {
-        Err(Error::UnsupportedFrame)
+fn encode_position(position: GimbalPosition, gimbal_device_id: u8) -> Result<Demand, Error> {
+    let flags = frame_flags(position.frame)?;
+    if position.angles.roll.is_some() {
+        return Err(Error::Unsupported);
+    }
+    if position.angles.pitch.is_none() && position.angles.yaw.is_none() {
+        return Err(Error::EmptyCommand);
+    }
+    for angle in [position.angles.pitch, position.angles.yaw]
+        .into_iter()
+        .flatten()
+    {
+        if angle.as_radians().abs() > core::f32::consts::PI {
+            return Err(Error::OutOfRange);
+        }
+    }
+    Ok(Demand::CommandLong {
+        command: 1000,
+        params: [
+            position
+                .angles
+                .pitch
+                .map_or(f32::NAN, |v| v.as_radians().to_degrees()),
+            position
+                .angles
+                .yaw
+                .map_or(f32::NAN, |v| v.as_radians().to_degrees()),
+            f32::NAN,
+            f32::NAN,
+            flags as f32,
+            0.0,
+            f32::from(gimbal_device_id),
+        ],
+    })
+}
+
+pub(crate) fn frame_flags(frame: ReferenceFrame) -> Result<u32, Error> {
+    match frame {
+        ReferenceFrame::Vehicle => Ok(0),
+        ReferenceFrame::HorizonVehicleYaw => Ok(HORIZON_VEHICLE_YAW_FLAGS),
+        ReferenceFrame::EarthNed => Ok(HORIZON_VEHICLE_YAW_FLAGS | 16),
+        ReferenceFrame::Mount => Err(Error::UnsupportedFrame),
     }
 }
 
@@ -188,14 +191,23 @@ pub fn stop_command(command: PayloadCommand) -> Result<PayloadCommand, Error> {
             ZoomCommand::Continuous(NormalizedZoomRate::new(0.0)?),
         )),
         PayloadCommand::Zoom(_) => Err(Error::Unsupported),
-        _ => Ok(PayloadCommand::GimbalRate(GimbalRate {
-            rates: Axes {
-                pitch: Some(AngularRate::ZERO),
-                roll: None,
-                yaw: Some(AngularRate::ZERO),
-            },
-            frame: ReferenceFrame::HorizonVehicleYaw,
+        PayloadCommand::Recenter => Err(Error::Unsupported),
+        PayloadCommand::GimbalRate(rate) => Ok(PayloadCommand::GimbalRate(GimbalRate {
+            rates: zero_rates(rate.rates),
+            frame: rate.frame,
         })),
+        PayloadCommand::GimbalPosition(position) => Ok(PayloadCommand::GimbalRate(GimbalRate {
+            rates: zero_rates(position.angles),
+            frame: position.frame,
+        })),
+    }
+}
+
+fn zero_rates<T>(axes: Axes<Option<T>>) -> Axes<Option<AngularRate>> {
+    Axes {
+        pitch: axes.pitch.map(|_| AngularRate::ZERO),
+        roll: axes.roll.map(|_| AngularRate::ZERO),
+        yaw: axes.yaw.map(|_| AngularRate::ZERO),
     }
 }
 

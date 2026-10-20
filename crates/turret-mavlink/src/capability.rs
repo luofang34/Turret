@@ -1,50 +1,23 @@
-//! Protocol operations are separate from unknown attached-device geometry.
+//! Advertised device support is distinct from implemented client operations.
 
 use turret_core::*;
 
-/// Advertise the manager-client operations implemented for a pitch/yaw mount.
-/// Device position limits and feedback remain unknown until independently discovered.
+mod manager;
+pub use manager::ManagerInformation;
+
+/// Describe one selected manager from its information message, or unknown discovery.
+///
+/// The host validates sender, device binding, connection epoch, and report ordering.
+/// Rate maxima are host operating policy: the information message carries angle limits,
+/// not measured speed limits. Device information cannot replace manager information,
+/// because a manager may add capabilities beyond those of its attached device.
 pub fn manager_capabilities(
     revision: u64,
+    information: Option<ManagerInformation>,
     pitch_maximum: AngularRate,
     yaw_maximum: AngularRate,
 ) -> Result<PayloadCapabilities, Error> {
-    let axis = |maximum: AngularRate| -> Result<AxisCapabilities, Error> {
-        if maximum.as_radians_per_second() <= 0.0 {
-            return Err(Error::InvalidLimits);
-        }
-        Ok(AxisCapabilities {
-            position: Capability::Unknown,
-            rate: Capability::Available(RateCapability {
-                implementation: Implementation::Native,
-                maximum_rate: maximum,
-                frames: Frames {
-                    horizon_vehicle_yaw: true,
-                    ..Frames::default()
-                },
-            }),
-            feedback: FeedbackCapabilities {
-                angle: Capability::Unknown,
-                rate: Capability::Unknown,
-            },
-        })
-    };
-    Ok(PayloadCapabilities {
-        revision,
-        gimbal: GimbalCapabilities {
-            axes: Axes {
-                pitch: axis(pitch_maximum)?,
-                roll: AxisCapabilities::UNSUPPORTED,
-                yaw: axis(yaw_maximum)?,
-            },
-            recenter: Capability::Available(RecenterCapability {
-                implementation: Implementation::Native,
-                target: None,
-            }),
-            stop: StopGuarantee::BestEffort,
-        },
-        zoom: Capability::Unknown,
-    })
+    manager::capabilities(revision, information, pitch_maximum, yaw_maximum)
 }
 
 /// Advertise camera zoom only from its BASIC_ZOOM capability.

@@ -1,15 +1,19 @@
 //! Single device owner integrating portable execution with host I/O.
 
 use crate::error::{Error, Result};
-use crate::gimbal::{DeviceObservation, GimbalDevice};
+use crate::gimbal::{DeviceObservation, GimbalDevice, PayloadLane};
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task;
 use turret_core::{CommandProgress, Effect, PayloadCapabilities, PayloadCommand};
 
 mod execution;
+mod lanes;
+mod lifecycle;
+mod observation;
+use lanes::Fences;
 mod timing;
 use execution::DeviceSlot;
 pub use timing::HostCommandTiming;
@@ -19,7 +23,7 @@ mod tests;
 /// One shared payload, one transport owner, and one local execution clock.
 #[derive(Clone)]
 pub struct GimbalHandle {
-    fence: Arc<AtomicU64>,
+    fences: Arc<Fences>,
     inner: Arc<Mutex<DeviceSlot>>,
     yaw_offset_centi_deg: Arc<AtomicI32>,
 }
@@ -27,9 +31,10 @@ pub struct GimbalHandle {
 impl GimbalHandle {
     /// Construct a handle after checking the backend's capability contract.
     pub fn new(device: Box<dyn GimbalDevice>) -> Result<Self> {
+        let fences = Arc::new(Fences::default());
         Ok(Self {
-            fence: Arc::new(AtomicU64::new(0)),
-            inner: Arc::new(Mutex::new(DeviceSlot::new(device)?)),
+            fences: fences.clone(),
+            inner: Arc::new(Mutex::new(DeviceSlot::new(device, fences)?)),
             yaw_offset_centi_deg: Arc::new(AtomicI32::new(0)),
         })
     }
@@ -61,11 +66,11 @@ impl GimbalHandle {
         timing: HostCommandTiming,
     ) -> Result<CommandProgress> {
         let inner = self.inner.clone();
-        let fence = self.fence.clone();
-        let expected = fence.load(Ordering::Acquire);
+        let lane = PayloadLane::for_command(payload);
+        let expected = self.fences.snapshot(lane);
         task::spawn_blocking(move || {
             let mut slot = inner.lock();
-            if fence.load(Ordering::Acquire) != expected || slot.fence != expected {
+            if !slot.matches_fence(lane, expected) {
                 return Err(turret_core::Error::StaleIdentity.into());
             }
             slot.execute_blocking(payload, timing)
@@ -99,21 +104,17 @@ impl GimbalHandle {
     }
 
     /// Retained command evidence; polling and observations may have advanced its stages.
-    pub async fn last_progress_cached(&self) -> Result<Option<CommandProgress>> {
+    pub async fn last_progress_cached(&self, lane: PayloadLane) -> Result<Option<CommandProgress>> {
         let inner = self.inner.clone();
-        task::spawn_blocking(move || {
-            let slot = inner.lock();
-            slot.last_identity
-                .and_then(|identity| slot.executor.progress(identity))
-        })
-        .await
-        .map_err(join_err)
+        task::spawn_blocking(move || inner.lock().lane(lane).progress_cached())
+            .await
+            .map_err(join_err)
     }
 
     /// Actual backend capabilities, including unavailable and unknown operations.
     pub async fn capabilities(&self) -> Result<PayloadCapabilities> {
         let inner = self.inner.clone();
-        task::spawn_blocking(move || inner.lock().device.capabilities())
+        task::spawn_blocking(move || inner.lock().capabilities_blocking())
             .await
             .map_err(join_err)?
     }
@@ -136,41 +137,20 @@ impl GimbalHandle {
 
     /// Revoke pending and active commands before releasing this device owner.
     pub async fn revoke(&self) -> Result<()> {
-        let next_fence = self.fence.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        self.fences.advance_device();
         let inner = self.inner.clone();
-        task::spawn_blocking(move || {
-            let mut slot = inner.lock();
-            slot.fence = next_fence;
-            let invalidation = slot.executor.revoke();
-            if let Some(active) = invalidation.active {
-                slot.apply_effect_blocking(active.effect)?;
-            }
-            Ok(())
-        })
-        .await
-        .map_err(join_err)?
+        task::spawn_blocking(move || inner.lock().revoke_blocking())
+            .await
+            .map_err(join_err)?
     }
 
     /// Fence queued work and replace the physical device after reconnection.
     pub async fn replace(&self, device: Box<dyn GimbalDevice>) -> Result<u64> {
-        let next_fence = self.fence.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        self.fences.advance_device();
         let inner = self.inner.clone();
-        task::spawn_blocking(move || {
-            let mut slot = inner.lock();
-            let capabilities = device.capabilities()?;
-            let invalidation = slot.executor.reconnect(capabilities);
-            if let Some(active) = invalidation.active {
-                if let Err(error) = slot.apply_effect_blocking(active.effect) {
-                    tracing::warn!(%error, "old device stopping state is unknown during reconnect");
-                }
-            }
-            slot.device = device;
-            slot.fence = next_fence;
-            slot.last_identity = None;
-            Ok(slot.executor.epoch())
-        })
-        .await
-        .map_err(join_err)?
+        task::spawn_blocking(move || inner.lock().replace_blocking(device))
+            .await
+            .map_err(join_err)?
     }
 
     /// Execute an explicitly STorM32-specific extension without implying generic support.
@@ -179,12 +159,12 @@ impl GimbalHandle {
         action: crate::protocols::storm32_rc::Storm32Action,
     ) -> Result<()> {
         let inner = self.inner.clone();
-        let fence = self.fence.clone();
-        let expected = fence.load(Ordering::Acquire);
+        let lane = PayloadLane::Gimbal;
+        let expected = self.fences.snapshot(lane);
         let deadline = Instant::now() + std::time::Duration::from_millis(100);
         task::spawn_blocking(move || {
             let mut slot = inner.lock();
-            if fence.load(Ordering::Acquire) != expected || slot.fence != expected {
+            if !slot.matches_fence(lane, expected) {
                 return Err(turret_core::Error::StaleIdentity.into());
             }
             let protocol = slot.device.protocol_name();
@@ -204,10 +184,20 @@ impl GimbalHandle {
         .map_err(join_err)?
     }
 
-    /// Attempt an explicit stop; success means the backend accepted the request.
-    pub async fn stop(&self, effect: Effect) -> Result<()> {
+    /// Fence and stop the selected lane without cancelling the other lane.
+    pub async fn stop_lane(&self, lane: PayloadLane, effect: Effect) -> Result<()> {
+        self.fences.advance_lane(lane);
         let inner = self.inner.clone();
-        task::spawn_blocking(move || inner.lock().apply_effect_blocking(effect))
+        task::spawn_blocking(move || inner.lock().stop_lane_blocking(lane, effect))
+            .await
+            .map_err(join_err)?
+    }
+
+    /// Explicitly fence both lanes and attempt a device-wide stop or cancel.
+    pub async fn stop_all(&self, effect: Effect) -> Result<()> {
+        self.fences.advance_device();
+        let inner = self.inner.clone();
+        task::spawn_blocking(move || inner.lock().stop_all_blocking(effect))
             .await
             .map_err(join_err)?
     }

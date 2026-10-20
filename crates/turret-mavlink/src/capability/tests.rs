@@ -1,24 +1,6 @@
 use super::*;
 
 #[test]
-fn manager_profile_never_invents_device_geometry_or_feedback() {
-    let caps = manager_capabilities(
-        4,
-        AngularRate::radians_per_second(0.8).unwrap(),
-        AngularRate::radians_per_second(0.8).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(caps.gimbal.axes.pitch.position, Capability::Unknown);
-    assert_eq!(caps.gimbal.axes.pitch.feedback.angle, Capability::Unknown);
-    assert_eq!(caps.gimbal.axes.roll.rate, Capability::Unsupported);
-    let rate = caps.gimbal.axes.yaw.rate.available().unwrap();
-    assert!(rate.frames.contains(ReferenceFrame::HorizonVehicleYaw));
-    assert!(!rate.frames.contains(ReferenceFrame::Vehicle));
-    assert_eq!(caps.gimbal.recenter.available().unwrap().target, None);
-    assert_eq!(caps.gimbal.stop, StopGuarantee::BestEffort);
-}
-
-#[test]
 fn basic_zoom_does_not_establish_physical_units_or_continuous_support() {
     let caps = camera_capabilities(1, true).unwrap();
     let zoom = caps.zoom.available().unwrap();
@@ -61,3 +43,5 @@ fn core_executor_rejects_unverified_zoom_operation_before_encoding() {
     );
     assert_eq!(executor.prepare_send(Tick(1)).unwrap(), None);
 }
+
+mod manager;

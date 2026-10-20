@@ -28,14 +28,47 @@ fn selected_pitch_rate_omits_other_axes_and_preserves_reference() {
 }
 
 #[test]
-fn ordinary_vehicle_frame_cannot_silently_become_horizon_pitch() {
+fn each_supported_frame_preserves_its_protocol_reference() {
+    for (frame, expected) in [
+        (ReferenceFrame::Vehicle, 0),
+        (ReferenceFrame::HorizonVehicleYaw, 12),
+        (ReferenceFrame::EarthNed, 28),
+    ] {
+        let command = PayloadCommand::GimbalRate(GimbalRate {
+            rates: Axes {
+                pitch: Some(AngularRate::ZERO),
+                roll: None,
+                yaw: None,
+            },
+            frame,
+        });
+        let Demand::AttitudeRate { flags, yaw_rps, .. } = encode_payload(command, 0, 0).unwrap()
+        else {
+            panic!("expected rate packet");
+        };
+        assert_eq!(flags, expected);
+        assert!(yaw_rps.is_nan());
+        let position = PayloadCommand::GimbalPosition(GimbalPosition {
+            angles: Axes {
+                pitch: Some(Angle::ZERO),
+                roll: None,
+                yaw: None,
+            },
+            frame,
+        });
+        let Demand::CommandLong { params, .. } = encode_payload(position, 0, 0).unwrap() else {
+            panic!("expected position packet");
+        };
+        assert_eq!(params[4], expected as f32);
+        assert!(params[1].is_nan());
+    }
     let command = PayloadCommand::GimbalRate(GimbalRate {
         rates: Axes {
             pitch: Some(AngularRate::ZERO),
             roll: None,
             yaw: None,
         },
-        frame: ReferenceFrame::Vehicle,
+        frame: ReferenceFrame::Mount,
     });
     assert_eq!(encode_payload(command, 0, 0), Err(Error::UnsupportedFrame));
 }
@@ -53,13 +86,42 @@ fn recenter_claim_and_camera_keep_distinct_protocol_targets() {
         panic!("expected recenter command");
     };
     assert_eq!(command, 1000);
-    assert_eq!(params[0..2], [0.0, 0.0]);
-    assert!(params[2].is_nan());
-    assert!(params[3].is_nan());
-    assert_eq!(params[4], 12.0);
+    assert!(params[0..4].iter().all(|value| value.is_nan()));
+    assert_eq!(params[4], 2.0);
     assert_eq!(params[6], 3.0);
 }
 
+#[test]
+fn stop_preserves_selected_axes_and_frame_without_inventing_neutral_cancellation() {
+    let position = PayloadCommand::GimbalPosition(GimbalPosition {
+        angles: Axes {
+            pitch: Some(Angle::ZERO),
+            roll: None,
+            yaw: None,
+        },
+        frame: ReferenceFrame::Vehicle,
+    });
+    let stop = stop_command(position).unwrap();
+    let Demand::AttitudeRate {
+        flags,
+        pitch_rps,
+        roll_rps,
+        yaw_rps,
+        ..
+    } = encode_payload(stop, 3, 0).unwrap()
+    else {
+        panic!("expected stop packet");
+    };
+    assert_eq!(flags, 0);
+    assert_eq!(pitch_rps, 0.0);
+    assert!(roll_rps.is_nan());
+    assert!(yaw_rps.is_nan());
+    assert_eq!(stop_command(stop).unwrap(), stop);
+    assert_eq!(
+        stop_command(PayloadCommand::Recenter),
+        Err(Error::Unsupported)
+    );
+}
 #[test]
 fn zoom_coordinates_map_only_to_their_native_protocol_units() {
     let examples = [
