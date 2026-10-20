@@ -14,7 +14,6 @@ impl DeviceSlot {
                 self.fence_lane(lane);
                 let state = self.lane_mut(lane);
                 let invalidated = state.executor.update_capabilities(capabilities);
-                state.last_identity = None;
                 (
                     lane,
                     invalidated
@@ -107,7 +106,6 @@ impl DeviceSlot {
         let effects = PayloadLane::ALL.map(|lane| {
             let state = self.lane_mut(lane);
             let invalidated = state.executor.reconnect(capabilities);
-            state.last_identity = None;
             (
                 lane,
                 invalidated

@@ -370,7 +370,7 @@ fn devicewide_revoke_attempts_both_lanes_even_when_the_first_stop_fails() {
 }
 
 #[test]
-fn capability_changes_and_reconnection_clear_both_lanes() {
+fn capability_changes_and_reconnection_preserve_both_lanes_evidence() {
     runtime().block_on(async {
         let (handle, probe) = camera();
         let gimbal = handle
@@ -392,8 +392,8 @@ fn capability_changes_and_reconnection_clear_both_lanes() {
             state.capabilities.revision = state.capabilities.revision.wrapping_add(1);
         }
         handle.capabilities().await.unwrap();
-        for lane in PayloadLane::ALL {
-            assert!(handle.last_progress_cached(lane).await.unwrap().is_none());
+        for (lane, prior) in [(PayloadLane::Gimbal, gimbal), (PayloadLane::Zoom, zoom)] {
+            assert_retained(&handle, lane, prior, EndReason::Revoked).await;
         }
         assert_eq!(
             probe.lock().stops,
@@ -432,9 +432,25 @@ fn capability_changes_and_reconnection_clear_both_lanes() {
                 .unwrap(),
             1
         );
-        for lane in PayloadLane::ALL {
-            assert!(handle.last_progress_cached(lane).await.unwrap().is_none());
+        for (lane, prior) in [
+            (PayloadLane::Gimbal, next_gimbal),
+            (PayloadLane::Zoom, next_zoom),
+        ] {
+            assert_retained(&handle, lane, prior, EndReason::Reconnected).await;
         }
         assert_eq!(handle.observe_raw().await.unwrap().epoch, 1);
     });
+}
+
+#[cfg(test)]
+async fn assert_retained(
+    handle: &GimbalHandle,
+    lane: PayloadLane,
+    prior: CommandProgress,
+    reason: EndReason,
+) {
+    let retained = handle.last_progress_cached(lane).await.unwrap().unwrap();
+    assert_eq!(retained.identity, prior.identity);
+    assert_eq!(retained.sent_at, prior.sent_at);
+    assert_eq!(retained.ended, Some(reason));
 }

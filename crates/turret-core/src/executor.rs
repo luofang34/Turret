@@ -136,6 +136,7 @@ impl Executor {
             prepared_at: None,
             sent_at: None,
             acknowledged_at: None,
+            rejected_at: None,
             acknowledgement_timed_out: false,
             observed_complete_at: None,
             ended: None,
@@ -251,6 +252,9 @@ impl Executor {
     }
 
     /// Record a device ACK separately from measured completion.
+    ///
+    /// A rejection remains authoritative if a later positive ACK contradicts it.
+    /// Repeated responses preserve their first receipt time.
     pub fn acknowledge(
         &mut self,
         identity: CommandIdentity,
@@ -263,21 +267,35 @@ impl Executor {
         if record.command.identity != identity {
             return Err(Error::NotFound);
         }
-        if accepted {
-            record.progress.acknowledged_at = Some(now);
-            if record
+        if record.progress.rejected_at.is_some() {
+            return if accepted {
+                Err(Error::Ended)
+            } else {
+                Ok(LifecycleEvent {
+                    progress: record.progress,
+                    effect: Effect::None,
+                })
+            };
+        }
+        if record.progress.acknowledged_at.is_none()
+            && record
                 .command
                 .timing
                 .ack_before
                 .is_some_and(|deadline| now >= deadline)
-            {
-                record.progress.acknowledgement_timed_out = true;
+        {
+            record.progress.acknowledgement_timed_out = true;
+        }
+        if accepted {
+            if record.progress.acknowledged_at.is_none() {
+                record.progress.acknowledged_at = Some(now);
             }
             Ok(LifecycleEvent {
                 progress: record.progress,
                 effect: Effect::None,
             })
         } else {
+            record.progress.rejected_at = Some(now);
             Ok(record.finish(EndReason::DeviceRejected))
         }
     }

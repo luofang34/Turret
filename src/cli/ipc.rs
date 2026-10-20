@@ -39,6 +39,9 @@ pub(super) fn print_ipc_response(cmd: &str, response: &Json) -> Result<()> {
     let status = response.get("status").and_then(Json::as_str);
     match status {
         Some("error") => {
+            if let Some(data) = response.get("data") {
+                pretty_print_data(cmd, data)?;
+            }
             let msg = response
                 .get("message")
                 .and_then(Json::as_str)
@@ -92,6 +95,9 @@ pub(super) fn pretty_print_data(cmd: &str, data: &Json) -> Result<()> {
                 output(format_args!("yaw_offset_deg={off:.3}"))?;
             }
             output(format_args!("firmware: {fw}"))?;
+            if let Some(progress) = data.get("command_progress") {
+                output(format_args!("command_progress: {progress}"))?;
+            }
         }
         "version" => {
             if let Some(v) = data.get("version").and_then(Json::as_str) {

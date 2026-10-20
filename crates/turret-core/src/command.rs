@@ -147,6 +147,8 @@ pub struct CommandProgress {
     pub sent_at: Option<Tick>,
     /// Time the device positively acknowledged the operation.
     pub acknowledged_at: Option<Tick>,
+    /// Time of the first device rejection, retained through later invalidation.
+    pub rejected_at: Option<Tick>,
     /// Whether an expected acknowledgement deadline was missed.
     pub acknowledgement_timed_out: bool,
     /// Time fresh measurements established completion.

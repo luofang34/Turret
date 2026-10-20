@@ -1,6 +1,8 @@
 use crate::executor::tests::{capabilities, command, observation, position, rate, sent, tolerance};
 use crate::*;
 
+mod rejection;
+
 #[test]
 fn completion_timeout_does_not_disable_execution_validity() {
     let mut executor = Executor::new(capabilities().unwrap(), 5, 7);
