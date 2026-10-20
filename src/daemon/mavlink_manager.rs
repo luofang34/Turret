@@ -163,7 +163,7 @@ impl MavlinkManager {
             result = self.receive_loop(&config, &socket) => result,
             () = handlers::heartbeat_loop(socket.clone(), self.peers.clone(), self.seq.clone(), config.clone()) => Ok(()),
             () = handlers::publish_status_loop(socket.clone(), self.peers.clone(), self.seq.clone(), self.state_manager.clone(), config.clone(), self.start_time) => Ok(()),
-            () = handlers::attitude_broadcast_loop(socket.clone(), self.peers.clone(), self.seq.clone(), config.clone(), self.start_time, attitude_rx) => Ok(()),
+            () = handlers::attitude_broadcast_loop(socket.clone(), self.peers.clone(), self.seq.clone(), config.clone(), self.start_time, attitude_rx, self.state_manager.clone()) => Ok(()),
         }
     }
 

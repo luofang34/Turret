@@ -135,9 +135,9 @@ fn partial_command_and_independent_measurement_cross_udp_boundary() {
                 roll: Some(Angle::ZERO),
                 yaw: Some(Angle::ZERO),
             };
-            let measured = handle.observe().await.unwrap().complete_attitude().unwrap();
+            let measured = handle.observe().await.unwrap();
             tx.send(Arc::new(turret::daemon::attitude::AttitudeTick {
-                attitude: measured,
+                observation: measured,
                 link_recently_failed: false,
             }))
             .unwrap();

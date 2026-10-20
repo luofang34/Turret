@@ -12,8 +12,9 @@ fn build_attitude_status_round_trips_quaternion() {
         roll: -7.5,
         yaw: 33.25,
     };
-    let data =
-        build_attitude_status_data(&attitude, Instant::now(), GimbalDeviceErrorFlags::empty());
+    let data = build_attitude_status_data(&attitude, 1234, GimbalDeviceErrorFlags::empty());
+
+    assert_eq!(data.time_boot_ms, 1234);
 
     // Decoding the quaternion back must recover the input Euler angles.
     // This catches both the math.rs helper and our use of it.
@@ -31,7 +32,7 @@ fn build_attitude_status_uses_broadcast_addressing_and_vehicle_frame() {
             roll: 0.0,
             yaw: 0.0,
         },
-        Instant::now(),
+        1234,
         GimbalDeviceErrorFlags::empty(),
     );
 
@@ -117,7 +118,7 @@ fn build_attitude_status_propagates_caller_failure_flags() {
             roll: 0.0,
             yaw: 0.0,
         },
-        Instant::now(),
+        1234,
         GimbalDeviceErrorFlags::GIMBAL_DEVICE_ERROR_FLAGS_COMMS_ERROR,
     );
     assert!(data

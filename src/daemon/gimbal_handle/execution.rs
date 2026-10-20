@@ -68,7 +68,7 @@ impl DeviceSlot {
     ) -> Result<CommandProgress> {
         let lane = PayloadLane::for_command(payload);
         let expected = self.fences.snapshot(lane);
-        self.poll_blocking()?;
+        self.prepare_lane_blocking(lane)?;
         if !self.matches_fence(lane, expected) {
             return Err(turret_core::Error::StaleIdentity.into());
         }
@@ -96,7 +96,7 @@ impl DeviceSlot {
             .prepare_send(now)?
             .ok_or(turret_core::Error::NotFound)?;
         self.write_blocking(lane, command, timing.send_before)?;
-        self.poll_blocking()?;
+        self.poll_lane_blocking(lane)?;
         self.lane(lane)
             .executor
             .progress(identity)
@@ -138,16 +138,15 @@ impl DeviceSlot {
                     .record_write_failure(identity, now)?;
                 self.fence_lane(lane);
                 self.lane_mut(lane).last_identity = Some(identity);
-                for effect in [
-                    failed.active.map(|event| event.effect),
-                    Some(failed.attempted.effect),
-                ]
-                .into_iter()
-                .flatten()
+                for event in [failed.active, Some(failed.attempted)]
+                    .into_iter()
+                    .flatten()
                 {
-                    if let Err(stop_error) = self.apply_effect_blocking(lane, effect) {
-                        tracing::warn!(%stop_error, ?lane, "physical state remains unknown after write failure");
-                    }
+                    self.lane_mut(lane)
+                        .require_stop(event.effect, Some(event.progress.identity));
+                }
+                if let Err(stop_error) = self.retry_stops_blocking([lane]) {
+                    tracing::warn!(%stop_error, ?lane, "physical state remains unknown after write failure");
                 }
                 return Err(error);
             }
@@ -155,7 +154,20 @@ impl DeviceSlot {
         let now = self.tick(receipt.sent_at)?;
         let sent = self.lane_mut(lane).executor.record_sent(identity, now)?;
         self.lane_mut(lane).last_identity = Some(identity);
-        self.apply_effect_blocking(lane, sent.current.effect)?;
+        self.lane_mut(lane)
+            .require_stop(sent.current.effect, Some(identity));
+        // Receipt facts are independent of whether the required stop succeeds.
+        let acknowledgement = self.record_acknowledgement(lane, identity, receipt);
+        let stopping = self.retry_stops_blocking([lane]);
+        acknowledgement.and(stopping)
+    }
+
+    fn record_acknowledgement(
+        &mut self,
+        lane: PayloadLane,
+        identity: CommandIdentity,
+        receipt: crate::gimbal::DeviceReceipt,
+    ) -> Result<()> {
         if let Some(accepted) = receipt.acknowledged {
             let at = self.tick(
                 receipt
@@ -166,7 +178,8 @@ impl DeviceSlot {
                 .lane_mut(lane)
                 .executor
                 .acknowledge(identity, accepted, at)?;
-            self.apply_effect_blocking(lane, event.effect)?;
+            self.lane_mut(lane)
+                .require_stop(event.effect, Some(identity));
         }
         Ok(())
     }
@@ -180,10 +193,37 @@ impl DeviceSlot {
         &mut self,
         lane: PayloadLane,
         effect: Effect,
+        identity: Option<CommandIdentity>,
     ) -> Result<()> {
         if effect == Effect::None {
             return Ok(());
         }
-        self.device.stop_blocking(lane, effect)
+        if self.lane_mut(lane).require_stop(effect, identity) {
+            self.attempt_stop_blocking(lane, effect)
+        } else {
+            self.lane(lane).ensure_stopped(lane)
+        }
+    }
+
+    pub(super) fn attempt_stop_blocking(
+        &mut self,
+        lane: PayloadLane,
+        effect: Effect,
+    ) -> Result<()> {
+        let pending = self
+            .lane(lane)
+            .pending_stops()
+            .into_iter()
+            .find_map(|(candidate, pending)| (candidate == effect).then_some(pending).flatten());
+        let Some(pending) = pending else {
+            return Ok(());
+        };
+        match self.device.stop_blocking(lane, effect) {
+            Ok(()) => {
+                self.lane_mut(lane).clear_stop(effect);
+                Ok(())
+            }
+            Err(error) => Err(pending.error(lane, effect, Some(error))),
+        }
     }
 }

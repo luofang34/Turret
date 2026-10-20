@@ -66,7 +66,7 @@ pub(super) fn build_gimbal_manager_status_data(
     }
 }
 
-/// Build a `GIMBAL_DEVICE_ATTITUDE_STATUS_DATA` from a measured attitude.
+/// Build a measured attitude message with its validated acquisition timestamp.
 ///
 /// `target_system / target_component = 0` — the manager broadcasts this to
 /// every recorded peer, not to a single addressed system. `flags` is set
@@ -78,12 +78,12 @@ pub(super) fn build_gimbal_manager_status_data(
 /// broadcast entirely, not by setting flags on a stale frame.
 pub(super) fn build_attitude_status_data(
     attitude: &Attitude,
-    start_time: Instant,
+    sample_boot_ms: u32,
     failure_flags: GimbalDeviceErrorFlags,
 ) -> GIMBAL_DEVICE_ATTITUDE_STATUS_DATA {
     let q = euler_deg_to_quaternion_wxyz(attitude.pitch, attitude.roll, attitude.yaw);
     GIMBAL_DEVICE_ATTITUDE_STATUS_DATA {
-        time_boot_ms: start_time.elapsed().as_millis() as u32,
+        time_boot_ms: sample_boot_ms,
         target_system: 0,
         target_component: 0,
         flags: GimbalDeviceFlags::GIMBAL_DEVICE_FLAGS_YAW_IN_VEHICLE_FRAME,
@@ -106,6 +106,18 @@ pub(super) async fn send_mavlink_message(
     seq: &Arc<AtomicU8>,
     msg: MavMessage,
 ) -> crate::error::Result<()> {
+    send_mavlink_message_if_current(socket, dest_addr, sysid, compid, seq, msg, || true).await
+}
+
+async fn send_mavlink_message_if_current(
+    socket: &Arc<UdpSocket>,
+    dest_addr: SocketAddr,
+    sysid: u8,
+    compid: u8,
+    seq: &Arc<AtomicU8>,
+    msg: MavMessage,
+    is_current: impl Fn() -> bool,
+) -> crate::error::Result<()> {
     let header = mavlink::MavHeader {
         system_id: sysid,
         component_id: compid,
@@ -118,8 +130,17 @@ pub(super) async fn send_mavlink_message(
     let mut buf = Vec::new();
     mavlink::write_v2_msg(&mut buf, header, &msg)?;
 
-    socket.send_to(&buf, dest_addr).await?;
-    Ok(())
+    loop {
+        socket.writable().await?;
+        if !is_current() {
+            return Ok(());
+        }
+        match socket.try_send_to(&buf, dest_addr) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 /// Broadcast a single frame to every recorded peer. Each broadcast loop
@@ -135,13 +156,34 @@ pub(super) async fn broadcast_to_peers(
     msg: MavMessage,
     label: &'static str,
 ) {
+    broadcast_to_peers_if_current(socket, peers, config, seq, msg, label, || true).await;
+}
+
+/// Revalidate sampled evidence immediately before each nonblocking UDP write.
+pub(super) async fn broadcast_to_peers_if_current(
+    socket: &Arc<UdpSocket>,
+    peers: &Peers,
+    config: &MavlinkConfig,
+    seq: &Arc<AtomicU8>,
+    msg: MavMessage,
+    label: &'static str,
+    is_current: impl Fn() -> bool,
+) {
     let targets: Vec<SocketAddr> = peers.lock().await.keys().copied().collect();
     if targets.is_empty() {
         return;
     }
     for peer in targets {
-        if let Err(e) =
-            send_mavlink_message(socket, peer, config.sysid, config.compid, seq, msg.clone()).await
+        if let Err(e) = send_mavlink_message_if_current(
+            socket,
+            peer,
+            config.sysid,
+            config.compid,
+            seq,
+            msg.clone(),
+            &is_current,
+        )
+        .await
         {
             warn!("{} to {} failed: {}", label, peer, e);
         }

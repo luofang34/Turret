@@ -20,6 +20,21 @@ pub enum Error {
         /// Name of the missing quantity.
         field: &'static str,
     },
+    /// A required stop or cancel has not succeeded on its original device owner.
+    #[error("{lane:?} {effect:?} remains unconfirmed in epoch {epoch} for commands {commands:?}")]
+    StopUnconfirmed {
+        /// The independent payload lane whose motion remains blocked.
+        lane: crate::gimbal::PayloadLane,
+        /// The device operation that must succeed before new motion.
+        effect: turret_core::Effect,
+        /// Connection epoch that owns the unresolved physical responsibility.
+        epoch: u64,
+        /// Active and possibly partially written command identities.
+        commands: [Option<turret_core::CommandIdentity>; 2],
+        /// Original stop failure, when this operation attempted the device I/O.
+        #[source]
+        source: Option<Box<Error>>,
+    },
     /// Failure from the STorM32 RC driver.
     #[error("storm32: {0}")]
     Storm32(#[from] Storm32Error),
