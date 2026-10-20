@@ -236,15 +236,22 @@ async fn execute_position(
 
 async fn status_response(state: &StateManager, gimbal: &GimbalHandle) -> IpcResponse {
     let state = state.state_cached();
-    let progress = match gimbal.last_progress_cached().await {
-        Ok(progress) => progress.map(|p| serde_json::json!({
-            "epoch": p.identity.epoch, "generation": p.identity.generation, "id": p.identity.id,
-            "sent_at_us": p.sent_at.map(|t| t.0), "acknowledged_at_us": p.acknowledged_at.map(|t| t.0),
-            "acknowledgement_timed_out": p.acknowledgement_timed_out,
-            "observed_complete_at_us": p.observed_complete_at.map(|t| t.0), "ended": p.ended.map(|reason| format!("{reason:?}")),
-        })),
-        Err(error) => return IpcResponse::error(error.to_string()),
-    };
+    let mut progress = serde_json::Map::new();
+    for (name, lane) in [
+        ("gimbal", crate::gimbal::PayloadLane::Gimbal),
+        ("zoom", crate::gimbal::PayloadLane::Zoom),
+    ] {
+        let value = match gimbal.last_progress_cached(lane).await {
+            Ok(progress) => progress.map(|p| serde_json::json!({
+                "epoch": p.identity.epoch, "generation": p.identity.generation, "id": p.identity.id,
+                "sent_at_us": p.sent_at.map(|t| t.0), "acknowledged_at_us": p.acknowledged_at.map(|t| t.0),
+                "acknowledgement_timed_out": p.acknowledgement_timed_out,
+                "observed_complete_at_us": p.observed_complete_at.map(|t| t.0), "ended": p.ended.map(|reason| format!("{reason:?}")),
+            })).unwrap_or(serde_json::Value::Null),
+            Err(error) => return IpcResponse::error(error.to_string()),
+        };
+        progress.insert(name.to_owned(), value);
+    }
     IpcResponse::ok_with_data(serde_json::json!({
         "yaw": state.yaw, "pitch": state.pitch, "roll": state.roll,
         "measured_at": state.measured_at, "connection_epoch": state.connection_epoch,

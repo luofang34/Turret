@@ -31,7 +31,11 @@ impl GimbalDevice for TestDevice {
             acknowledged: None,
         })
     }
-    fn stop_blocking(&mut self, _effect: turret_core::Effect) -> Result<()> {
+    fn stop_blocking(
+        &mut self,
+        _lane: crate::gimbal::PayloadLane,
+        _effect: turret_core::Effect,
+    ) -> Result<()> {
         Ok(())
     }
 }

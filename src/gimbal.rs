@@ -60,6 +60,28 @@ impl DeviceObservation {
     }
 }
 
+/// Independently controlled operations sharing one physical payload transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadLane {
+    /// Mount position, rate, and recenter commands.
+    Gimbal,
+    /// Camera zoom commands.
+    Zoom,
+}
+
+impl PayloadLane {
+    /// Both execution lanes, for an explicitly device-wide operation.
+    pub const ALL: [Self; 2] = [Self::Gimbal, Self::Zoom];
+
+    /// The execution lane whose command may replace or stop this operation.
+    pub const fn for_command(command: turret_core::PayloadCommand) -> Self {
+        match command {
+            turret_core::PayloadCommand::Zoom(_) => Self::Zoom,
+            _ => Self::Gimbal,
+        }
+    }
+}
+
 /// Synchronous host binding for a payload's portable command contract.
 ///
 /// Backends must check `send_before` at the actual write boundary, including
@@ -82,8 +104,8 @@ pub trait GimbalDevice: Send {
             op: "observe",
         })
     }
-    /// Attempt the requested stop or cancel action; unsupported is explicit.
-    fn stop_blocking(&mut self, _effect: turret_core::Effect) -> Result<()> {
+    /// Attempt a stop or cancel only on the selected lane; unsupported is explicit.
+    fn stop_blocking(&mut self, _lane: PayloadLane, _effect: turret_core::Effect) -> Result<()> {
         Err(Error::Unsupported {
             protocol: self.protocol_name(),
             op: "stop",

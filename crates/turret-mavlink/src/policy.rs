@@ -36,11 +36,15 @@ impl ManagerPolicy {
         })
     }
 
-    /// Scale canonical stick directions; idle never overwrites an unresolved sent recenter.
+    /// Scale sticks in horizon pitch / vehicle-follow yaw using discovered support.
+    ///
+    /// Unusable axes are omitted only for zero input. Idle never overwrites an
+    /// unresolved sent recenter, and this policy never changes the requested frame.
     pub fn rate_intent(
         &self,
         pitch: f32,
         yaw: f32,
+        capabilities: &PayloadCapabilities,
         now: Tick,
     ) -> Result<Option<PayloadCommand>, Error> {
         if !pitch.is_finite()
@@ -56,16 +60,20 @@ impl ManagerPolicy {
         if pitch == 0.0 && yaw == 0.0 && self.recenter_sent.is_some() {
             return Ok(None);
         }
+        let rates = Axes {
+            pitch: axis_rate(
+                pitch,
+                self.pitch_maximum,
+                capabilities.gimbal.axes.pitch.rate,
+            )?,
+            roll: None,
+            yaw: axis_rate(yaw, self.yaw_maximum, capabilities.gimbal.axes.yaw.rate)?,
+        };
+        if rates.pitch.is_none() && rates.yaw.is_none() {
+            return Ok(None);
+        }
         Ok(Some(PayloadCommand::GimbalRate(GimbalRate {
-            rates: Axes {
-                pitch: Some(AngularRate::radians_per_second(
-                    pitch * self.pitch_maximum.as_radians_per_second(),
-                )?),
-                roll: None,
-                yaw: Some(AngularRate::radians_per_second(
-                    yaw * self.yaw_maximum.as_radians_per_second(),
-                )?),
-            },
+            rates,
             frame: ReferenceFrame::HorizonVehicleYaw,
         })))
     }
@@ -125,7 +133,7 @@ impl ManagerPolicy {
                 self.streaming = false;
             }
             PayloadCommand::GimbalRate(rate) => {
-                check_rate_frame(rate.frame)?;
+                crate::demand::frame_flags(rate.frame)?;
                 self.recenter_sent = None;
                 self.streaming = rate.rates.pitch.is_some_and(|r| r != AngularRate::ZERO)
                     || rate.rates.yaw.is_some_and(|r| r != AngularRate::ZERO);
@@ -160,12 +168,32 @@ impl ManagerPolicy {
     }
 }
 
-fn check_rate_frame(frame: ReferenceFrame) -> Result<(), Error> {
-    if frame == ReferenceFrame::HorizonVehicleYaw {
-        Ok(())
-    } else {
-        Err(Error::UnsupportedFrame)
+fn axis_rate(
+    input: f32,
+    configured_maximum: AngularRate,
+    capability: Capability<RateCapability>,
+) -> Result<Option<AngularRate>, Error> {
+    let supported = match capability.available() {
+        Ok(value) => value,
+        Err(_) if input == 0.0 => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !supported.frames.contains(ReferenceFrame::HorizonVehicleYaw) {
+        return if input == 0.0 {
+            Ok(None)
+        } else {
+            Err(Error::UnsupportedFrame)
+        };
     }
+    let maximum = supported.maximum_rate.as_radians_per_second();
+    if maximum <= 0.0 {
+        return Err(Error::InvalidLimits);
+    }
+    let rate = input * configured_maximum.as_radians_per_second();
+    if rate.abs() > maximum {
+        return Err(Error::OutOfRange);
+    }
+    AngularRate::radians_per_second(rate).map(Some)
 }
 
 #[cfg(test)]

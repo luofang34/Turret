@@ -117,7 +117,10 @@ fn execute_blocking(matches: &ArgMatches, payload: turret_core::PayloadCommand) 
     );
     let sent = executor.record_sent(command.identity, sent_at)?;
     if sent.current.effect != turret_core::Effect::None {
-        device.stop_blocking(sent.current.effect)?;
+        device.stop_blocking(
+            gimbal::PayloadLane::for_command(payload),
+            sent.current.effect,
+        )?;
     }
     match receipt.acknowledged {
         Some(true) => output(format_args!(

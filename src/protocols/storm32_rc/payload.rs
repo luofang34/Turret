@@ -61,9 +61,15 @@ impl GimbalDevice for Storm32Gimbal {
         })
     }
 
-    fn stop_blocking(&mut self, effect: Effect) -> Result<()> {
+    fn stop_blocking(&mut self, lane: crate::gimbal::PayloadLane, effect: Effect) -> Result<()> {
         if effect == Effect::None {
             return Ok(());
+        }
+        if lane != crate::gimbal::PayloadLane::Gimbal {
+            return Err(Error::Unsupported {
+                protocol: self.protocol_name(),
+                op: "zoom stop",
+            });
         }
         self.last_rate_at = None;
         let deadline = Instant::now() + Duration::from_millis(100);
