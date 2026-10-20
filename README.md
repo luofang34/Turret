@@ -47,6 +47,12 @@ Write expiry, continuous-command expiry, ACK timeout, and completion timeout
 have separate meanings. A host stop request does not establish a device
 watchdog guarantee.
 
+The host retains failed stop and cancel requests with their command identities.
+They block new motion on the affected lane until an explicit poll or stop
+operation succeeds. The other lane can remain available. Device replacement
+is refused while the old owner has an unresolved stop or cancel request;
+discovering another device does not prove that the old device stopped.
+
 ### Mini 3 accessory video request
 
 `turret-dji::Mini3AccessoryKeyframe` provides one finite request for the Mini 3

@@ -145,6 +145,9 @@ impl GimbalHandle {
     }
 
     /// Fence queued work and replace the physical device after reconnection.
+    ///
+    /// Replacement is refused while an old-device stop or cancel obligation remains
+    /// unresolved; a new connection cannot establish that the old actuator stopped.
     pub async fn replace(&self, device: Box<dyn GimbalDevice>) -> Result<u64> {
         self.fences.advance_device();
         let inner = self.inner.clone();
@@ -164,6 +167,10 @@ impl GimbalHandle {
         let deadline = Instant::now() + std::time::Duration::from_millis(100);
         task::spawn_blocking(move || {
             let mut slot = inner.lock();
+            if !slot.matches_fence(lane, expected) {
+                return Err(turret_core::Error::StaleIdentity.into());
+            }
+            slot.prepare_lane_blocking(lane)?;
             if !slot.matches_fence(lane, expected) {
                 return Err(turret_core::Error::StaleIdentity.into());
             }

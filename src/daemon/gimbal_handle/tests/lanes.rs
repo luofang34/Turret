@@ -2,6 +2,7 @@ use super::*;
 use crate::gimbal::PayloadLane;
 
 mod fencing;
+mod stop_responsibility;
 
 struct Probe {
     capabilities: PayloadCapabilities,
@@ -436,7 +437,7 @@ fn capability_changes_and_reconnection_preserve_both_lanes_evidence() {
             (PayloadLane::Gimbal, next_gimbal),
             (PayloadLane::Zoom, next_zoom),
         ] {
-            assert_retained(&handle, lane, prior, EndReason::Reconnected).await;
+            assert_retained(&handle, lane, prior, EndReason::Revoked).await;
         }
         assert_eq!(handle.observe_raw().await.unwrap().epoch, 1);
     });

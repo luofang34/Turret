@@ -8,9 +8,9 @@ use turret_core::*;
 
 impl DeviceSlot {
     pub(super) fn observe_blocking(&mut self) -> Result<DeviceObservation> {
-        self.poll_blocking()?;
+        self.poll_deadlines_blocking()?;
         let result = self.device.observe_blocking();
-        self.poll_blocking()?;
+        self.poll_deadlines_blocking()?;
         let mut observation = result?;
         observation.epoch = self.lane(PayloadLane::Gimbal).executor.epoch();
         let sampled_at = observation
