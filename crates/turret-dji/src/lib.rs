@@ -8,6 +8,7 @@ mod checksum;
 mod duml;
 mod gimbal;
 mod keyframe;
+mod observed;
 mod pitch;
 mod profile;
 mod stream;
@@ -20,6 +21,7 @@ pub use duml::{DumlFrame, DumlParser, RouteAddress};
 pub use gimbal::{GimbalAngles, GimbalPitchTarget, PitchTargetError, pitch_response};
 pub use stream::ParseStats;
 
+pub use observed::{ObservedPitchPlan, ObservedPitchPlanner};
 pub use pitch::{MAX_INPUT_INTERVAL, PitchPlanner, PitchRateError};
 pub use profile::{Mini3ControlProfile, rc_version_request};
 
