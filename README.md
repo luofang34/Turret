@@ -173,6 +173,18 @@ and field names — matches the response shape (`firmware_version`,
 `pan_mode`, ...) and standard JSON conventions. Send `{"cmd":"help"}`
 for the full machine-readable schema.
 
+`set` and `center` responses include command identity
+(`epoch`, `generation`, `id`, `sequence`) and separate write, device-ACK,
+rejection, timeout, and measured-completion evidence in `data`. An `ok`
+response means the manager dispatched the command without a known failure;
+it does not imply device acknowledgement or physical arrival. A known
+execution failure returns `error` with the same evidence. `status` exposes
+the latest retained receipt per lane in `command_progress`, including commands
+revoked by a capability change or ended by reconnection. Compare identities
+before associating a status receipt with a command; this is a bounded snapshot,
+not command history. Identities and monotonic microsecond timestamps apply
+only within one daemon/device-owner lifetime.
+
 ### Reading attitude after a `set`
 
 `status` returns the most recent attitude polled by the daemon's 4 Hz

@@ -6,6 +6,7 @@
 //! `cmd_long.rs`) and the selected-rate adapter (`rate.rs`) can call into
 //! them without each duplicating the logic.
 
+use crate::daemon::command_receipt::dispatch_succeeded;
 use crate::daemon::mavlink_manager::math::{clamp_axis, earth_to_vehicle_yaw_deg};
 use crate::daemon::mavlink_manager::RxCtx;
 use crate::daemon::models::GimbalCommand;
@@ -122,11 +123,12 @@ pub(super) async fn dispatch_gimbal_command(
 ) -> bool {
     match ctx.arbitrator.execute(command, ctx.gimbal).await {
         Ok(progress) => {
-            info!(?progress, "Executed MAVLink {}", label);
-            true
+            let dispatched = dispatch_succeeded(&progress);
+            info!(?progress, dispatched, "MAVLink {} dispatch evidence", label);
+            dispatched
         }
         Err(error) => {
-            error!(%error, "MAVLink {} was not executed", label);
+            error!(%error, "MAVLink {} dispatch failed", label);
             false
         }
     }

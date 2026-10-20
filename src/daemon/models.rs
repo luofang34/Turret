@@ -354,8 +354,8 @@ pub enum IpcCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum IpcResponse {
-    /// Successful command execution. `data` carries any payload the
-    /// handler wanted to return (e.g. `Status` returns the gimbal state).
+    /// Successful request handling; motion data distinguishes dispatch,
+    /// device acknowledgement, and measured completion.
     Ok {
         /// Optional payload returned alongside the OK status.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -365,6 +365,9 @@ pub enum IpcResponse {
     Error {
         /// Human-readable failure reason.
         message: String,
+        /// Retained command evidence when execution produced a receipt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
     },
 }
 
@@ -383,6 +386,15 @@ impl IpcResponse {
     pub fn error(message: impl Into<String>) -> Self {
         IpcResponse::Error {
             message: message.into(),
+            data: None,
+        }
+    }
+
+    /// Construct an error response retaining the command's execution evidence.
+    pub fn error_with_data(message: impl Into<String>, data: serde_json::Value) -> Self {
+        IpcResponse::Error {
+            message: message.into(),
+            data: Some(data),
         }
     }
 }

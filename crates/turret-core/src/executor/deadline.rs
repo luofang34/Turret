@@ -11,6 +11,7 @@ pub(super) fn active_deadline(record: &mut Record, now: Tick) -> Option<Lifecycl
         return Some(record.finish(EndReason::ValidityExpired));
     }
     if record.progress.acknowledged_at.is_none()
+        && record.progress.rejected_at.is_none()
         && !record.progress.acknowledgement_timed_out
         && timing.ack_before.is_some_and(|deadline| now >= deadline)
     {

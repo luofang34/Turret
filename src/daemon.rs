@@ -3,6 +3,7 @@
 pub mod arbitrator;
 pub mod attitude;
 pub mod calibration;
+pub(crate) mod command_receipt;
 pub mod config;
 pub mod gimbal_handle;
 pub mod ipc_server;

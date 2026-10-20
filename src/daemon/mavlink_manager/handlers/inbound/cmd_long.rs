@@ -11,6 +11,7 @@ use super::common::{
     addressed_to_this_device, addressed_to_us, gimbal_device_id_from_param7, selected_position,
 };
 use super::rate::{any_rate_active, dispatch_rate_command};
+use crate::daemon::command_receipt::dispatch_succeeded;
 use crate::daemon::mavlink_manager::handlers::build::{
     build_gimbal_manager_status_data, message_id_from_param, msg_id, send_command_ack,
     send_gimbal_manager_information, send_mavlink_message,
@@ -204,7 +205,15 @@ async fn execute_pitchyaw(sender_sysid: u8, cmd: COMMAND_LONG_DATA, ctx: &RxCtx<
     );
     match command {
         Some(command) => match ctx.arbitrator.execute(command, ctx.gimbal).await {
-            Ok(_) => MavResult::MAV_RESULT_ACCEPTED,
+            Ok(progress) => {
+                let dispatched = dispatch_succeeded(&progress);
+                info!(?progress, dispatched, "MAVLink pitch/yaw dispatch evidence");
+                if dispatched {
+                    MavResult::MAV_RESULT_ACCEPTED
+                } else {
+                    MavResult::MAV_RESULT_FAILED
+                }
+            }
             Err(error) => {
                 error!(%error, "pitch/yaw execution rejected");
                 MavResult::MAV_RESULT_FAILED

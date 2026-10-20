@@ -8,6 +8,7 @@ use bench::{calibrate_yaw, selftest, set_yaw_offset};
 
 use self::slot::{SlotGuard, SlotPool, MAX_IPC_SLOTS};
 use super::arbitrator::Arbitrator;
+use super::command_receipt;
 use super::config::IpcConfig;
 use super::gimbal_handle::GimbalHandle;
 use super::models::{ControlSource, GimbalCommand, IpcCommand, IpcResponse, PanMode};
@@ -216,9 +217,7 @@ impl IpcServer {
     }
 }
 
-/// Common tail for `Set` / `Center`: arbitrate, then call the gimbal
-/// handle if accepted. Failures from either layer collapse to the
-/// caller's IPC error response shape.
+/// Preserve dispatch evidence even when the device explicitly rejects the command.
 async fn execute_position(
     arbitrator: &Arbitrator,
     gimbal: &GimbalHandle,
@@ -226,10 +225,17 @@ async fn execute_position(
     label: &str,
 ) -> IpcResponse {
     match arbitrator.execute(command, gimbal).await {
-        Ok(progress) => IpcResponse::ok_with_data(serde_json::json!({
-            "sent": progress.sent_at.is_some(), "device_acknowledged": progress.acknowledged_at.is_some(),
-            "observed_complete": progress.observed_complete_at.is_some(),
-        })),
+        Ok(progress) => {
+            let data = command_receipt::to_json(&progress);
+            if command_receipt::dispatch_succeeded(&progress) {
+                IpcResponse::ok_with_data(data)
+            } else {
+                IpcResponse::error_with_data(
+                    format!("Failed to {label}: command dispatch did not succeed"),
+                    data,
+                )
+            }
+        }
         Err(error) => IpcResponse::error(format!("Failed to {label}: {error}")),
     }
 }
@@ -242,12 +248,10 @@ async fn status_response(state: &StateManager, gimbal: &GimbalHandle) -> IpcResp
         ("zoom", crate::gimbal::PayloadLane::Zoom),
     ] {
         let value = match gimbal.last_progress_cached(lane).await {
-            Ok(progress) => progress.map(|p| serde_json::json!({
-                "epoch": p.identity.epoch, "generation": p.identity.generation, "id": p.identity.id,
-                "sent_at_us": p.sent_at.map(|t| t.0), "acknowledged_at_us": p.acknowledged_at.map(|t| t.0),
-                "acknowledgement_timed_out": p.acknowledgement_timed_out,
-                "observed_complete_at_us": p.observed_complete_at.map(|t| t.0), "ended": p.ended.map(|reason| format!("{reason:?}")),
-            })).unwrap_or(serde_json::Value::Null),
+            Ok(progress) => progress
+                .as_ref()
+                .map(command_receipt::to_json)
+                .unwrap_or(serde_json::Value::Null),
             Err(error) => return IpcResponse::error(error.to_string()),
         };
         progress.insert(name.to_owned(), value);
@@ -305,3 +309,6 @@ fn help_response() -> IpcResponse {
         ]
     }))
 }
+
+#[cfg(test)]
+mod tests;
