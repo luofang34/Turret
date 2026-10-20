@@ -45,6 +45,29 @@ pub struct DeviceObservation {
 }
 
 impl DeviceObservation {
+    /// Return the acquisition time of fresh physical feedback on the host clock.
+    ///
+    /// Receipt time never substitutes for an unknown acquisition time. Estimates
+    /// and operator assumptions cannot establish a measured attitude.
+    pub fn measurement_time(
+        &self,
+        now: std::time::Instant,
+        maximum_age: std::time::Duration,
+    ) -> Option<std::time::Instant> {
+        if !matches!(
+            self.source,
+            turret_core::ObservationSource::DeviceMeasured
+                | turret_core::ObservationSource::TransformedMeasurement
+        ) {
+            return None;
+        }
+        let sampled = self.sampled_at?;
+        if sampled > self.received_at || self.received_at > now {
+            return None;
+        }
+        (now.checked_duration_since(sampled)? <= maximum_age).then_some(sampled)
+    }
+
     /// Extract a complete attitude for formats that require all three axes.
     pub fn complete_attitude(self) -> Result<Attitude> {
         let angle = |value: Option<turret_core::Angle>, field| {

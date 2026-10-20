@@ -4,7 +4,7 @@ use crate::daemon::calibration::Calibration;
 use crate::daemon::gimbal_handle::GimbalHandle;
 use crate::daemon::state::StateManager;
 use crate::daemon::yaw_corrector::YawCorrector;
-use crate::gimbal::Attitude;
+use crate::gimbal::DeviceObservation;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Notify};
@@ -17,9 +17,8 @@ use tracing::{info, warn};
 /// (MAVLink `GIMBAL_DEVICE_ERROR_FLAGS_COMMS_ERROR`, …).
 #[derive(Debug, Clone, Copy)]
 pub struct AttitudeTick {
-    /// Operator-frame attitude (yaw already calibration-corrected by
-    /// `GimbalHandle`).
-    pub attitude: Attitude,
+    /// Physical sample in operator coordinates, retaining acquisition time and source.
+    pub observation: DeviceObservation,
     /// True when at least one poll within the last 1 s
     /// (`COMMS_ERROR_LINGER`) failed. Solid links clear this on the
     /// next successful tick; flaky links keep it set.
@@ -36,6 +35,9 @@ const ATTITUDE_CHANNEL_CAPACITY: usize = 16;
 /// isn't perpetually held against MAVLink/IPC writers, high enough
 /// that a MAVLink GCS sees attitude updates at a useful rate.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Maximum acquisition age for cached and broadcast measured attitude.
+pub(crate) const MAX_MEASUREMENT_AGE: Duration = Duration::from_secs(1);
 
 /// Number of consecutive poll failures before the supervisor is
 /// pinged. 8 ticks × 250 ms ≈ 2 s — long enough to ride out a
@@ -94,7 +96,9 @@ pub async fn attitude_poll_loop(
                 continue;
             }
         };
-        state_manager.gimbal.update_observation(&observation);
+        if !state_manager.gimbal.update_observation(&observation) {
+            continue;
+        }
         let Ok(attitude) = observation.complete_attitude() else {
             continue;
         };
@@ -107,7 +111,7 @@ pub async fn attitude_poll_loop(
         )
         .await;
         let tick = AttitudeTick {
-            attitude,
+            observation,
             link_recently_failed: health
                 .last_failure
                 .is_some_and(|at| at.elapsed() < COMMS_ERROR_LINGER),

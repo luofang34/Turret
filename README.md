@@ -193,9 +193,13 @@ only within one daemon/device-owner lifetime.
 
 ### Reading attitude after a `set`
 
-`status` returns the most recent attitude polled by the daemon's 4 Hz
-attitude loop — at most ~250 ms behind the IMU, but more importantly
-it doesn't wait for the gimbal to physically settle on the new SP. The
+`status` retains the latest accepted measurement from the daemon's 4 Hz
+attitude loop. A sample needs a known acquisition time, a measured source,
+the current connection epoch, and an age of at most one second when accepted.
+Repeated, stale, future, and estimated samples do not refresh `measured_at`.
+MAVLink attitude broadcasts use that acquisition time and require all three
+vehicle-frame axes. Check `measured_at` before using a retained status value.
+The status query does not wait for the gimbal to settle on the new SP. The
 STorM32 motor traverses at roughly 10°/s, so a `set 0,0,10` followed
 immediately by `status` will show pitch/yaw still en route. Allow ~1.5
 to 2 seconds of motor travel for a 10° swing before reading status if

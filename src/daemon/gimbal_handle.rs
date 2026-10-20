@@ -90,7 +90,9 @@ impl GimbalHandle {
             observation.angles.yaw = Some(turret_core::Angle::radians(
                 yaw.as_radians() - self.yaw_offset_deg().to_radians(),
             )?);
-            observation.source = turret_core::ObservationSource::TransformedMeasurement;
+            if observation.source == turret_core::ObservationSource::DeviceMeasured {
+                observation.source = turret_core::ObservationSource::TransformedMeasurement;
+            }
         }
         Ok(observation)
     }
