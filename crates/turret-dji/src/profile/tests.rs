@@ -46,7 +46,10 @@ fn the_actual_pitch_contract_rejects_yaw_and_unverified_ranges() {
         .submit(command(Some(Angle::ZERO), None), Tick(0))
         .unwrap();
     assert!(executor.prepare_send(Tick(1)).unwrap().is_some());
-    assert!(matches!(capabilities.zoom, Capability::Unknown));
+    assert_eq!(
+        capabilities.zoom.available(),
+        Err(turret_core::Error::NotImplemented)
+    );
     assert_eq!(capabilities.gimbal.stop, StopGuarantee::Unknown);
 }
 
@@ -316,4 +319,33 @@ fn a_queued_target_is_valid_only_within_the_current_observed_step() {
             .validate_observed_target(-51, profile.pitch_target(-51).unwrap())
             .is_err()
     );
+}
+
+#[test]
+fn three_axis_stabilization_does_not_advertise_three_axis_operator_control() {
+    let caps = Mini3ControlProfile::new(
+        -900,
+        AngularRate::radians_per_second(30_f32.to_radians()).unwrap(),
+    )
+    .unwrap()
+    .capabilities()
+    .unwrap();
+    for axis in [
+        caps.gimbal.axes.pitch,
+        caps.gimbal.axes.roll,
+        caps.gimbal.axes.yaw,
+    ] {
+        assert_eq!(axis.mechanics.movement, HardwareSupport::Supported);
+        assert_eq!(axis.mechanics.stabilization, HardwareSupport::Supported);
+        assert_eq!(axis.feedback.angle, Capability::Unknown);
+    }
+    assert!(caps.gimbal.axes.pitch.rate.available().is_ok());
+    assert_eq!(caps.gimbal.axes.yaw.position, Capability::Unsupported);
+    assert_eq!(caps.gimbal.axes.yaw.rate, Capability::Unsupported);
+    assert_eq!(caps.gimbal.axes.roll.rate, Capability::Unsupported);
+    assert_eq!(
+        caps.gimbal.axes.roll.position,
+        Capability::Unimplemented { capability: None }
+    );
+    assert_eq!(caps.zoom, Capability::Unimplemented { capability: None });
 }

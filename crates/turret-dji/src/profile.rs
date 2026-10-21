@@ -1,9 +1,10 @@
 //! Mini 3 pitch feedback validation and a separate configured command envelope.
 
 use turret_core::{
-    Angle, AngleRange, AngularRate, Axes, AxisCapabilities, Capability, FeedbackCapabilities,
-    Frames, GimbalCapabilities, GimbalPosition, Implementation, PayloadCapabilities,
-    PositionCapability, RateCapability, RecenterCapability, ReferenceFrame, StopGuarantee,
+    Angle, AngleRange, AngularRate, Axes, AxisCapabilities, AxisMechanics, Capability,
+    FeedbackCapabilities, Frames, GimbalCapabilities, GimbalPosition, HardwareSupport,
+    Implementation, PayloadCapabilities, PositionCapability, RateCapability, RecenterCapability,
+    ReferenceFrame, StopGuarantee,
 };
 
 /// Pitch limits selected by the host for a tested Mini 3 attachment.
@@ -176,7 +177,8 @@ impl Mini3ControlProfile {
 
     /// Declare the same configured limits used by target planning and encoding.
     ///
-    /// Feedback, zoom, native position speed, and stopping behavior remain unknown.
+    /// Feedback, native position speed, and stopping behavior remain unknown.
+    /// Portrait orientation and zoom require backend implementations.
     pub fn capabilities(self) -> Result<PayloadCapabilities, turret_core::Error> {
         capabilities(self)
     }
@@ -191,7 +193,13 @@ fn capabilities(profile: Mini3ControlProfile) -> Result<PayloadCapabilities, tur
         angle: Capability::Unknown,
         rate: Capability::Unknown,
     };
-    let unavailable_axis = AxisCapabilities {
+    // The Mini 3 stabilizes three axes; only pitch has continuous operator control.
+    let mechanics = AxisMechanics {
+        movement: HardwareSupport::Supported,
+        stabilization: HardwareSupport::Supported,
+    };
+    let no_continuous_control = AxisCapabilities {
+        mechanics,
         position: Capability::Unsupported,
         rate: Capability::Unsupported,
         feedback,
@@ -201,6 +209,7 @@ fn capabilities(profile: Mini3ControlProfile) -> Result<PayloadCapabilities, tur
         gimbal: GimbalCapabilities {
             axes: Axes {
                 pitch: AxisCapabilities {
+                    mechanics,
                     position: Capability::Available(PositionCapability {
                         implementation: Implementation::Native,
                         range: AngleRange {
@@ -219,8 +228,12 @@ fn capabilities(profile: Mini3ControlProfile) -> Result<PayloadCapabilities, tur
                     }),
                     feedback,
                 },
-                roll: unavailable_axis,
-                yaw: unavailable_axis,
+                roll: AxisCapabilities {
+                    // Portrait switching does not establish a continuous roll range.
+                    position: Capability::Unimplemented { capability: None },
+                    ..no_continuous_control
+                },
+                yaw: no_continuous_control,
             },
             recenter: Capability::Available(RecenterCapability {
                 implementation: Implementation::Synthesized,
@@ -235,7 +248,7 @@ fn capabilities(profile: Mini3ControlProfile) -> Result<PayloadCapabilities, tur
             }),
             stop: StopGuarantee::Unknown,
         },
-        zoom: Capability::Unknown,
+        zoom: Capability::Unimplemented { capability: None },
     })
 }
 

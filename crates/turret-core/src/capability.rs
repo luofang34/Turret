@@ -1,4 +1,4 @@
-//! Device support, current availability, and control guarantees.
+//! Physical mechanics, endpoint operations, and current execution guarantees.
 
 use crate::{Angle, AngularRate, Axes, Error, Frames, GimbalPosition, ZoomCapabilities};
 
@@ -30,16 +30,24 @@ pub enum UnavailableReason {
     Policy,
 }
 
-/// Support and current usability of one operation.
+/// Support and current usability of one endpoint operation.
+///
+/// Operations can be synthesized. They do not establish mechanical axis presence,
+/// stabilization, or measured camera orientation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Capability<T> {
     /// Support has not been established for this device and firmware.
     Unknown,
-    /// The device does not implement this operation.
+    /// The endpoint does not support this operation.
     Unsupported,
+    /// The endpoint supports the operation, but this backend cannot execute it.
+    Unimplemented {
+        /// Known operation contract, absent when its limits or coordinates are unknown.
+        capability: Option<T>,
+    },
     /// The operation can currently be used.
     Available(T),
-    /// The device supports it, but a condition prevents current use.
+    /// The backend implements it, but a condition prevents current use.
     Unavailable {
         /// The supported operation's contract.
         capability: T,
@@ -55,6 +63,7 @@ impl<T> Capability<T> {
             Self::Available(value) => Ok(value),
             Self::Unknown => Err(Error::UnknownCapability),
             Self::Unsupported => Err(Error::Unsupported),
+            Self::Unimplemented { .. } => Err(Error::NotImplemented),
             Self::Unavailable { .. } => Err(Error::Unavailable),
         }
     }
@@ -117,9 +126,39 @@ pub struct FeedbackCapabilities {
     pub rate: Capability<()>,
 }
 
-/// One axis's command and observation contracts.
+/// Established physical support, independent of backend implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardwareSupport {
+    /// Physical support has not been established for this attachment.
+    Unknown,
+    /// The hardware does not provide the feature.
+    Unsupported,
+    /// The hardware provides the feature.
+    Supported,
+}
+
+/// Physical axis properties; these never grant command authority or feedback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AxisMechanics {
+    /// Whether the mount can physically move about this axis.
+    pub movement: HardwareSupport,
+    /// Whether the mount can stabilize the optical payload about this axis.
+    pub stabilization: HardwareSupport,
+}
+
+impl AxisMechanics {
+    /// No physical properties have been established.
+    pub const UNKNOWN: Self = Self {
+        movement: HardwareSupport::Unknown,
+        stabilization: HardwareSupport::Unknown,
+    };
+}
+
+/// One axis's physical, command, and observation contracts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AxisCapabilities {
+    /// Physical properties independent of logical operation support.
+    pub mechanics: AxisMechanics,
     /// Absolute position support.
     pub position: Capability<PositionCapability>,
     /// Continuous rate support.
@@ -129,8 +168,20 @@ pub struct AxisCapabilities {
 }
 
 impl AxisCapabilities {
-    /// Axis with no supported control or feedback.
+    /// No physical properties, operations, or feedback have been established.
+    pub const UNKNOWN: Self = Self {
+        mechanics: AxisMechanics::UNKNOWN,
+        position: Capability::Unknown,
+        rate: Capability::Unknown,
+        feedback: FeedbackCapabilities {
+            angle: Capability::Unknown,
+            rate: Capability::Unknown,
+        },
+    };
+
+    /// No endpoint control or feedback; physical properties remain unknown.
     pub const UNSUPPORTED: Self = Self {
+        mechanics: AxisMechanics::UNKNOWN,
         position: Capability::Unsupported,
         rate: Capability::Unsupported,
         feedback: FeedbackCapabilities {

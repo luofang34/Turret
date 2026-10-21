@@ -48,9 +48,9 @@ pub(super) fn capabilities(
         revision,
         gimbal: GimbalCapabilities {
             axes: Axes {
-                pitch: unknown_axis(),
-                roll: unknown_axis(),
-                yaw: unknown_axis(),
+                pitch: AxisCapabilities::UNKNOWN,
+                roll: AxisCapabilities::UNKNOWN,
+                yaw: AxisCapabilities::UNKNOWN,
             },
             recenter: Capability::Unknown,
             stop: StopGuarantee::Unknown,
@@ -91,17 +91,6 @@ pub(super) fn capabilities(
     Ok(result)
 }
 
-fn unknown_axis() -> AxisCapabilities {
-    AxisCapabilities {
-        position: Capability::Unknown,
-        rate: Capability::Unknown,
-        feedback: FeedbackCapabilities {
-            angle: Capability::Unknown,
-            rate: Capability::Unknown,
-        },
-    }
-}
-
 fn frames(flags: u32, follow: u32, lock: u32, yaw: bool) -> Frames {
     Frames {
         vehicle: flags & follow != 0,
@@ -124,19 +113,25 @@ fn axis(
         && (supported.vehicle || supported.horizon_vehicle_yaw || supported.earth_ned);
     let position = match angle_range(limits)? {
         Some(range) => position_capability(range, supported, implemented)?,
-        None => Capability::Unknown,
+        None if implemented => Capability::Unknown,
+        None => Capability::Unimplemented { capability: None },
     };
-    let rate = maximum.map_or(Capability::Unknown, |maximum_rate| {
-        availability(
-            RateCapability {
-                implementation: Implementation::Native,
-                maximum_rate,
-                frames: supported,
-            },
-            implemented,
-        )
-    });
+    let rate = maximum.map_or(
+        Capability::Unimplemented { capability: None },
+        |maximum_rate| {
+            availability(
+                RateCapability {
+                    implementation: Implementation::Native,
+                    maximum_rate,
+                    frames: supported,
+                },
+                implemented,
+            )
+        },
+    );
     Ok(AxisCapabilities {
+        // Manager operations may include vehicle motion; flags do not identify mechanics.
+        mechanics: AxisMechanics::UNKNOWN,
         position,
         rate,
         feedback: FeedbackCapabilities {
@@ -178,9 +173,8 @@ fn availability<T>(capability: T, implemented: bool) -> Capability<T> {
     if implemented {
         Capability::Available(capability)
     } else {
-        Capability::Unavailable {
-            capability,
-            reason: UnavailableReason::Policy,
+        Capability::Unimplemented {
+            capability: Some(capability),
         }
     }
 }

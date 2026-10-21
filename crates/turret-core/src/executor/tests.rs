@@ -10,6 +10,7 @@ pub(super) fn capabilities() -> Result<PayloadCapabilities, Error> {
         horizon_vehicle_yaw: false,
     };
     let pitch = AxisCapabilities {
+        mechanics: AxisMechanics::UNKNOWN,
         position: Capability::Available(PositionCapability {
             implementation: Implementation::Native,
             range: AngleRange {
@@ -402,41 +403,6 @@ fn failed_write_does_not_claim_sent_and_invalidates_generation() {
 }
 
 #[test]
-fn unknown_unsupported_and_unavailable_are_distinct() {
-    let mut caps = capabilities().unwrap();
-    caps.gimbal.axes.pitch.position = Capability::Unknown;
-    let mut executor = Executor::new(caps, 5, 7);
-    assert_eq!(
-        executor.submit(command(position()), Tick(0)),
-        Err(Error::UnknownCapability)
-    );
-    caps.gimbal.axes.pitch.position = Capability::Unsupported;
-    let mut executor = Executor::new(caps, 5, 7);
-    assert_eq!(
-        executor.submit(command(position()), Tick(0)),
-        Err(Error::Unsupported)
-    );
-    let known = capabilities()
-        .unwrap()
-        .gimbal
-        .axes
-        .pitch
-        .position
-        .available()
-        .copied()
-        .unwrap();
-    caps.gimbal.axes.pitch.position = Capability::Unavailable {
-        capability: known,
-        reason: UnavailableReason::Transport,
-    };
-    let mut executor = Executor::new(caps, 5, 7);
-    assert_eq!(
-        executor.submit(command(position()), Tick(0)),
-        Err(Error::Unavailable)
-    );
-}
-
-#[test]
 fn unsupported_axis_cannot_be_silently_converted_to_vehicle_motion() {
     let mut executor = Executor::new(capabilities().unwrap(), 5, 7);
     let yaw = PayloadCommand::GimbalPosition(GimbalPosition {
@@ -482,3 +448,5 @@ fn wrong_revision_or_backwards_clock_rejects_execution() {
         Err(Error::ClockRegression)
     );
 }
+
+mod capability;

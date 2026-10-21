@@ -62,6 +62,7 @@ fn missing_manager_information_cannot_grant_control() {
         caps.gimbal.axes.roll,
         caps.gimbal.axes.yaw,
     ] {
+        assert_eq!(axis.mechanics, AxisMechanics::UNKNOWN);
         assert_eq!(axis.position, Capability::Unknown);
         assert_eq!(axis.rate, Capability::Unknown);
         assert_eq!(axis.feedback.angle, Capability::Unknown);
@@ -143,6 +144,7 @@ fn two_axes_and_neutral_do_not_invent_feedback_or_a_measured_neutral_pose() {
     let caps = capabilities(Some(information(2 | 32 | 128 | 256 | 512))).unwrap();
     assert!(caps.gimbal.axes.pitch.rate.available().is_ok());
     assert!(caps.gimbal.axes.yaw.rate.available().is_ok());
+    assert_eq!(caps.gimbal.axes.yaw.mechanics, AxisMechanics::UNKNOWN);
     let neutral = caps.gimbal.recenter.available().unwrap();
     assert_eq!(neutral.implementation, Implementation::Native);
     assert_eq!(neutral.target, None);
@@ -155,16 +157,27 @@ fn unimplemented_roll_and_unrecognized_flags_never_grant_execution() {
     let caps = capabilities(Some(information(4 | 8 | 16))).unwrap();
     assert!(matches!(
         caps.gimbal.axes.roll.position,
-        Capability::Unavailable {
-            reason: UnavailableReason::Policy,
-            ..
+        Capability::Unimplemented {
+            capability: Some(_)
         }
     ));
-    assert_eq!(caps.gimbal.axes.roll.rate, Capability::Unknown);
+    assert_eq!(
+        caps.gimbal.axes.roll.rate,
+        Capability::Unimplemented { capability: None }
+    );
+    let command = PayloadCommand::GimbalPosition(GimbalPosition {
+        angles: Axes {
+            pitch: None,
+            roll: Some(Angle::ZERO),
+            yaw: None,
+        },
+        frame: ReferenceFrame::Vehicle,
+    });
+    assert_eq!(submit(caps, command), Err(Error::NotImplemented));
     let caps = capabilities(Some(information(256 | 2048 | 4096 | 0x8000_0000))).unwrap();
     assert_eq!(
         caps.gimbal.axes.yaw.rate.available(),
-        Err(Error::Unavailable)
+        Err(Error::NotImplemented)
     );
     assert_eq!(caps.gimbal.axes.pitch, AxisCapabilities::UNSUPPORTED);
     assert_eq!(caps.gimbal.recenter, Capability::Unsupported);
@@ -209,7 +222,7 @@ fn wider_mechanical_range_is_intersected_with_the_position_encoder_domain() {
     let caps = capabilities(Some(info)).unwrap();
     assert_eq!(
         caps.gimbal.axes.yaw.position.available(),
-        Err(Error::Unavailable)
+        Err(Error::NotImplemented)
     );
     assert!(caps.gimbal.axes.yaw.rate.available().is_ok());
 }
