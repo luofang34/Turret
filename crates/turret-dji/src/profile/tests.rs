@@ -4,7 +4,7 @@ use turret_core::{Command, CommandIdentity, CommandTiming, Executor, PayloadComm
 #[test]
 fn the_actual_pitch_contract_rejects_yaw_and_unverified_ranges() {
     let capabilities =
-        Mini3ControlProfile::new(-50, AngularRate::radians_per_second(0.05).unwrap())
+        Mini3ControlProfile::new(-50, 0, AngularRate::radians_per_second(0.05).unwrap())
             .unwrap()
             .capabilities()
             .unwrap();
@@ -68,16 +68,17 @@ fn the_version_query_is_valid_read_only_duml() {
 fn profiles_require_supported_geometry_and_positive_policy_rates() {
     let rate = AngularRate::radians_per_second(5_f32.to_radians()).unwrap();
     for minimum in [i16::MIN, -901, 1, i16::MAX] {
-        assert!(Mini3ControlProfile::new(minimum, rate).is_err());
+        assert!(Mini3ControlProfile::new(minimum, 0, rate).is_err());
     }
     for rate in [0.0, -0.1] {
         assert!(
-            Mini3ControlProfile::new(-50, AngularRate::radians_per_second(rate).unwrap()).is_err()
+            Mini3ControlProfile::new(-50, 0, AngularRate::radians_per_second(rate).unwrap())
+                .is_err()
         );
     }
     for degrees_per_second in [2_f32, 5.0, 10.0] {
         let rate = AngularRate::radians_per_second(degrees_per_second.to_radians()).unwrap();
-        let profile = Mini3ControlProfile::new(-50, rate).unwrap();
+        let profile = Mini3ControlProfile::new(-50, 0, rate).unwrap();
         let capabilities = profile.capabilities().unwrap();
         assert_eq!(
             capabilities
@@ -111,7 +112,7 @@ fn planners_and_encoded_targets_use_the_advertised_envelope() {
 
     for minimum in [-900, -50, -37, -1, 0] {
         let rate = AngularRate::radians_per_second(5_f32.to_radians()).unwrap();
-        let profile = Mini3ControlProfile::new(minimum, rate).unwrap();
+        let profile = Mini3ControlProfile::new(minimum, 0, rate).unwrap();
         let capabilities = profile.capabilities().unwrap();
         let position = capabilities.gimbal.axes.pitch.position.available().unwrap();
         let mut planner = PitchPlanner::from_confirmed_horizontal(profile);
@@ -163,8 +164,8 @@ fn final_encoding_and_write_commit_reject_a_target_from_a_wider_profile() {
     use core::time::Duration;
 
     let rate = AngularRate::radians_per_second(5_f32.to_radians()).unwrap();
-    let wide = Mini3ControlProfile::new(-900, rate).unwrap();
-    let narrow = Mini3ControlProfile::new(-50, rate).unwrap();
+    let wide = Mini3ControlProfile::new(-900, 0, rate).unwrap();
+    let narrow = Mini3ControlProfile::new(-50, 0, rate).unwrap();
     let outside = wide.pitch_target(-51).unwrap();
     assert!(narrow.encode_pitch(outside, 1).is_err());
     let mut planner = PitchPlanner::from_confirmed_horizontal(narrow);
@@ -180,7 +181,7 @@ fn final_encoding_and_write_commit_reject_a_target_from_a_wider_profile() {
 fn observed_targets_and_recenter_share_the_selected_range_and_rate() {
     for minimum in [-900, -50, -37] {
         let rate = AngularRate::radians_per_second(2_f32.to_radians()).unwrap();
-        let profile = Mini3ControlProfile::new(minimum, rate).unwrap();
+        let profile = Mini3ControlProfile::new(minimum, 0, rate).unwrap();
         for observed in minimum..=0 {
             for demand in [
                 -rate.as_radians_per_second(),
@@ -224,6 +225,7 @@ fn observed_targets_and_recenter_share_the_selected_range_and_rate() {
 fn observed_recenter_is_one_bounded_step_and_not_an_immediate_zero_target() {
     let profile = Mini3ControlProfile::new(
         -900,
+        0,
         AngularRate::radians_per_second(2_f32.to_radians()).unwrap(),
     )
     .unwrap();
@@ -245,6 +247,7 @@ fn observed_recenter_is_one_bounded_step_and_not_an_immediate_zero_target() {
 fn feedback_envelope_does_not_expand_the_command_envelope() {
     let profile = Mini3ControlProfile::new(
         -900,
+        0,
         AngularRate::radians_per_second(30_f32.to_radians()).unwrap(),
     )
     .unwrap();
@@ -282,7 +285,7 @@ fn feedback_envelope_does_not_expand_the_command_envelope() {
 fn every_legal_observed_step_preserves_the_policy_budget_and_wire_range() {
     for degrees in [0.01_f32, 2.03, 5.0, 30.0] {
         let rate = AngularRate::radians_per_second(degrees.to_radians()).unwrap();
-        let profile = Mini3ControlProfile::new(-900, rate).unwrap();
+        let profile = Mini3ControlProfile::new(-900, 0, rate).unwrap();
         for observed in -1350..=800 {
             for demand in [
                 -rate.as_radians_per_second(),
@@ -305,7 +308,7 @@ fn every_legal_observed_step_preserves_the_policy_budget_and_wire_range() {
 #[test]
 fn a_queued_target_is_valid_only_within_the_current_observed_step() {
     let rate = AngularRate::radians_per_second(30_f32.to_radians()).unwrap();
-    let profile = Mini3ControlProfile::new(-900, rate).unwrap();
+    let profile = Mini3ControlProfile::new(-900, 0, rate).unwrap();
     let target = profile.observed_hold_target(1).unwrap();
     for observed in [-300, 0, 1, 300] {
         assert!(profile.validate_observed_target(observed, target).is_ok());
@@ -313,7 +316,7 @@ fn a_queued_target_is_valid_only_within_the_current_observed_step() {
     for observed in [-301, 301, 800, -1350, i16::MAX] {
         assert!(profile.validate_observed_target(observed, target).is_err());
     }
-    let narrow = Mini3ControlProfile::new(-50, rate).unwrap();
+    let narrow = Mini3ControlProfile::new(-50, 0, rate).unwrap();
     assert!(
         narrow
             .validate_observed_target(-51, profile.pitch_target(-51).unwrap())
@@ -325,6 +328,7 @@ fn a_queued_target_is_valid_only_within_the_current_observed_step() {
 fn three_axis_stabilization_does_not_advertise_three_axis_operator_control() {
     let caps = Mini3ControlProfile::new(
         -900,
+        0,
         AngularRate::radians_per_second(30_f32.to_radians()).unwrap(),
     )
     .unwrap()

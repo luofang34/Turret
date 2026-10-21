@@ -145,8 +145,10 @@ impl PitchPlanner {
             return Ok(None);
         };
         let change = f64::from(rate).to_degrees() * 10.0 * elapsed.as_secs_f64();
-        let desired = (f64::from(self.commanded) + self.remainder + change)
-            .clamp(f64::from(self.profile.minimum_tenths()), 0.0);
+        let desired = (f64::from(self.commanded) + self.remainder + change).clamp(
+            f64::from(self.profile.minimum_tenths()),
+            f64::from(self.profile.maximum_tenths()),
+        );
         // The envelope is nonpositive; integer conversion truncates toward zero.
         let rounded = (desired - 0.5) as i16;
         self.remainder = desired - f64::from(rounded);

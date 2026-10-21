@@ -6,7 +6,12 @@ use turret_core::AngularRate;
 const TEST_RATE: f32 = core::f32::consts::PI / 36.0;
 
 fn profile(minimum: i16) -> Mini3ControlProfile {
-    Mini3ControlProfile::new(minimum, AngularRate::radians_per_second(TEST_RATE).unwrap()).unwrap()
+    Mini3ControlProfile::new(
+        minimum,
+        0,
+        AngularRate::radians_per_second(TEST_RATE).unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -147,7 +152,7 @@ fn a_recenter_requires_a_new_request_after_an_input_gap() {
 #[test]
 fn a_planner_uses_its_configured_rate_for_targets_and_recenter() {
     let rate = AngularRate::radians_per_second(2_f32.to_radians()).unwrap();
-    let profile = Mini3ControlProfile::new(-50, rate).unwrap();
+    let profile = Mini3ControlProfile::new(-50, 0, rate).unwrap();
     let mut planner = PitchPlanner::from_confirmed_horizontal(profile);
     assert!(planner.demand(-TEST_RATE, false, Duration::ZERO).is_err());
     assert!(planner.target(-TEST_RATE, Duration::ZERO).is_err());
