@@ -15,24 +15,39 @@ use turret_core::{
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mini3ControlProfile {
     minimum_tenths: i16,
+    maximum_tenths: i16,
     rate_limit: AngularRate,
 }
 
 impl Mini3ControlProfile {
-    /// Select a lower pitch bound between -90 and zero degrees and a positive rate limit.
-    pub fn new(minimum_tenths: i16, rate_limit: AngularRate) -> Result<Self, turret_core::Error> {
-        if !(-900..=0).contains(&minimum_tenths) || rate_limit.as_radians_per_second() <= 0.0 {
+    /// Select bounds within the Mini 3 controllable range of -90 through +60 degrees.
+    /// The range must include horizontal, and the rate limit must be positive.
+    pub fn new(
+        minimum_tenths: i16,
+        maximum_tenths: i16,
+        rate_limit: AngularRate,
+    ) -> Result<Self, turret_core::Error> {
+        if !(-900..=0).contains(&minimum_tenths)
+            || !(0..=600).contains(&maximum_tenths)
+            || rate_limit.as_radians_per_second() <= 0.0
+        {
             return Err(turret_core::Error::InvalidLimits);
         }
         Ok(Self {
             minimum_tenths,
+            maximum_tenths,
             rate_limit,
         })
     }
 
-    /// Inclusive lower target bound in tenths of a degree; the upper bound is zero.
+    /// Inclusive lower target bound in tenths of a degree.
     pub const fn minimum_tenths(self) -> i16 {
         self.minimum_tenths
+    }
+
+    /// Inclusive upper target bound in tenths of a degree.
+    pub const fn maximum_tenths(self) -> i16 {
+        self.maximum_tenths
     }
 
     /// Configured maximum absolute rate of the synthesized pitch demand.
@@ -132,6 +147,8 @@ impl Mini3ControlProfile {
         let desired = f64::from(pitch_tenths) + f64::from(demand).to_degrees() * 10.0;
         let desired = if recenter && pitch_tenths > 0 {
             desired.max(0.0)
+        } else if recenter {
+            desired.min(0.0)
         } else {
             desired
         };
@@ -153,8 +170,16 @@ impl Mini3ControlProfile {
         observed: i16,
         desired: f64,
     ) -> Result<crate::GimbalPitchTarget, turret_core::Error> {
-        let bounded = desired.clamp(f64::from(self.minimum_tenths), 0.0);
-        let target = i32::from((bounded - 0.5) as i16);
+        let bounded = desired.clamp(
+            f64::from(self.minimum_tenths),
+            f64::from(self.maximum_tenths),
+        );
+        let rounded = if bounded < 0.0 {
+            bounded - 0.5
+        } else {
+            bounded + 0.5
+        };
+        let target = i32::from(rounded as i16);
         let budget = f64::from(self.rate_limit.as_radians_per_second()).to_degrees() * 10.0;
         // Quantization must not add motion beyond one second of the policy rate.
         let step = (budget + 0.00001).min(f64::from(i16::MAX)) as i32;
@@ -216,7 +241,9 @@ fn capabilities(profile: Mini3ControlProfile) -> Result<PayloadCapabilities, tur
                             minimum: Angle::radians(
                                 f32::from(profile.minimum_tenths) * core::f32::consts::PI / 1800.0,
                             )?,
-                            maximum: Angle::ZERO,
+                            maximum: Angle::radians(
+                                f32::from(profile.maximum_tenths) * core::f32::consts::PI / 1800.0,
+                            )?,
                         },
                         frames,
                         maximum_rate: None,

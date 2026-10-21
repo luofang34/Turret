@@ -6,6 +6,7 @@ use crate::{DumlFrame, DumlParser, Mini3ControlProfile, RouteAddress, checksum};
 fn profile() -> Mini3ControlProfile {
     Mini3ControlProfile::new(
         -900,
+        0,
         turret_core::AngularRate::radians_per_second(5_f32.to_radians()).unwrap(),
     )
     .unwrap()
@@ -72,7 +73,8 @@ fn a_target_outside_the_encoder_range_cannot_be_encoded() {
             profile().pitch_target(tenths),
             Err(PitchTargetError {
                 tenths,
-                minimum_tenths: -900
+                minimum_tenths: -900,
+                maximum_tenths: 0,
             })
         );
     }

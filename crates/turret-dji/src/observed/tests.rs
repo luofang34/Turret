@@ -5,6 +5,7 @@ fn planner() -> ObservedPitchPlanner {
     ObservedPitchPlanner::new(
         Mini3ControlProfile::new(
             -900,
+            0,
             AngularRate::radians_per_second(5_f32.to_radians()).unwrap(),
         )
         .unwrap(),
@@ -217,4 +218,53 @@ fn manual_input_never_reverses_or_enlarges_to_reenter_the_command_envelope() {
         .unwrap()
         .unwrap();
     assert_eq!(plan.target().tenths(), -851);
+}
+
+#[test]
+fn positive_pitch_can_move_down_hold_and_recenter_within_the_declared_range() {
+    let profile = Mini3ControlProfile::new(
+        -900,
+        600,
+        AngularRate::radians_per_second(30_f32.to_radians()).unwrap(),
+    )
+    .unwrap();
+    let mut planner = ObservedPitchPlanner::new(profile);
+    let down = planner
+        .plan(403, -30_f32.to_radians(), false, at(0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(down.target().tenths(), 103);
+    assert!(planner.written(down));
+    let hold = planner.plan(390, 0.0, false, at(40)).unwrap().unwrap();
+    assert_eq!(hold.target().tenths(), 390);
+    assert!(planner.written(hold));
+    let center = planner.plan(390, 0.0, true, at(80)).unwrap().unwrap();
+    assert_eq!(center.target().tenths(), 90);
+    assert!(planner.written(center));
+    assert_eq!(
+        planner
+            .plan(90, 0.0, false, at(120))
+            .unwrap()
+            .unwrap()
+            .target()
+            .tenths(),
+        0
+    );
+    planner.cancel();
+    assert_eq!(
+        planner
+            .plan(-90, 0.0, true, at(160))
+            .unwrap()
+            .unwrap()
+            .target()
+            .tenths(),
+        0
+    );
+    assert!(profile.pitch_target(601).is_err());
+    assert!(Mini3ControlProfile::new(-900, 601, profile.rate_limit()).is_err());
+    let positive = profile.pitch_target(403).unwrap();
+    let packet = profile.encode_pitch(positive, 7).unwrap();
+    assert_eq!(&packet[15..17], &403_i16.to_le_bytes());
+    let narrow = Mini3ControlProfile::new(-900, 0, profile.rate_limit()).unwrap();
+    assert!(narrow.encode_pitch(positive, 8).is_err());
 }

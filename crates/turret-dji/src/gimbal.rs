@@ -7,12 +7,14 @@ const GIMBAL: u8 = 4;
 
 /// A pitch target outside the selected control profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("gimbal pitch {tenths} tenths of a degree is outside {minimum_tenths}..=0")]
+#[error("gimbal pitch {tenths} tenths of a degree is outside {minimum_tenths}..={maximum_tenths}")]
 pub struct PitchTargetError {
     /// The rejected target in tenths of a degree.
     pub tenths: i16,
     /// The selected profile's inclusive lower bound.
     pub minimum_tenths: i16,
+    /// The selected profile's inclusive upper bound.
+    pub maximum_tenths: i16,
 }
 
 /// A profile-validated pitch target, encoded with a one-second movement duration.
@@ -26,12 +28,13 @@ impl GimbalPitchTarget {
         profile: crate::Mini3ControlProfile,
         tenths: i16,
     ) -> Result<Self, PitchTargetError> {
-        if (profile.minimum_tenths()..=0).contains(&tenths) {
+        if (profile.minimum_tenths()..=profile.maximum_tenths()).contains(&tenths) {
             Ok(Self { tenths })
         } else {
             Err(PitchTargetError {
                 tenths,
                 minimum_tenths: profile.minimum_tenths(),
+                maximum_tenths: profile.maximum_tenths(),
             })
         }
     }
