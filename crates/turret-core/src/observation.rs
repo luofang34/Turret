@@ -87,7 +87,8 @@ impl<T> Observation<T> {
 /// Physical quantities which may establish completion of absolute commands.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PayloadState {
-    /// Available measured axes; missing axes remain unknown.
+    /// Measured command coordinates in the observation's reference frame.
+    /// These are not a camera optical attitude. Missing axes remain unknown.
     Gimbal(Axes<Option<Angle>>),
     /// Actual zoom in one explicitly declared coordinate.
     Zoom(ZoomAbsolute),

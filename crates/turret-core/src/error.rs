@@ -9,9 +9,12 @@ pub enum Error {
     /// A capability contains inconsistent limits.
     #[error("invalid capability limits")]
     InvalidLimits,
-    /// The device does not implement the operation.
+    /// The endpoint does not support the operation.
     #[error("operation is unsupported")]
     Unsupported,
+    /// The endpoint supports the operation, but the backend does not implement it.
+    #[error("operation is not implemented by this backend")]
+    NotImplemented,
     /// Support has not been established.
     #[error("operation support is unknown")]
     UnknownCapability,

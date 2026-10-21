@@ -20,6 +20,7 @@ pub fn storm32_capabilities() -> Result<PayloadCapabilities, Error> {
         maximum_rate: None,
     };
     let axis = AxisCapabilities {
+        mechanics: AxisMechanics::UNKNOWN,
         position: Capability::Available(position),
         rate: Capability::Available(RateCapability {
             implementation: Implementation::Synthesized,
